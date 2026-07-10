@@ -19,44 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Rebuild Scrapers in Manifest
-        run: |
-          ISO_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          DAY_NOW=$(date -u +"%Y-%m-%d")
-
-          echo '{"version":"1.0","last_update":"","scrapers":[]}' > manifest.json
-
-          python3 - <<PYEOF
-import os, json
-from datetime import datetime, timezone
-
-scrapers_dir = "scrapers"
-day = "$DAY_NOW"
-iso = "$ISO_NOW"
-
-scrapers = []
-if os.path.isdir(scrapers_dir):
-    for f in sorted(os.listdir(scrapers_dir)):
-        if f.endswith(".py") and f != "__init__.py":
-            name = f[:-3]
-            scrapers.append({
-                "name": name,
-                "version": "1.0",
-                "domain": "",
-                "description": name[0].upper() + name[1:] + " Scraper",
-                "last_modified": day
-            })
-
-manifest = {
-    "version": "1.0",
-    "last_update": iso,
-    "scrapers": scrapers
-}
-
-with open("manifest.json", "w") as fh:
-    json.dump(manifest, fh, indent=2)
-
-print("manifest.json geschrieben mit %d scrapers" % len(scrapers))
-PYEOF
+        run: python3 generate_manifest.py
 
       - name: Commit and Push
         run: |
