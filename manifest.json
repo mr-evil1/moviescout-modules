@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "scrapers": [
+    {
+      "name": "filmpalast",
+      "version": "2.0",
+      "type": "both",
+      "domain": "filmpalast.to"
+    },
+    {
+      "name": "kkiste",
+      "version": "2.0",
+      "type": "both",
+      "domain": "kkiste.eu"
+    }
+  ]
+}
