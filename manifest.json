@@ -1,17 +1,13 @@
 {
   "version": "1.0",
+  "last_update": "2026-07-10T06:04:11Z",
   "scrapers": [
     {
       "name": "filmpalast",
-      "version": "2.0",
-      "type": "both",
-      "domain": "filmpalast.to"
-    },
-    {
-      "name": "kkiste",
-      "version": "2.0",
-      "type": "both",
-      "domain": "kkiste.eu"
+      "version": "1.0",
+      "domain": "",
+      "description": "Filmpalast Scraper",
+      "last_modified": "2026-07-10"
     }
   ]
 }
