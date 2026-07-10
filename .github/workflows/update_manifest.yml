@@ -25,19 +25,38 @@ jobs:
 
           echo '{"version":"1.0","last_update":"","scrapers":[]}' > manifest.json
 
-          SCRAPERS_JSON=$(find scrapers -name "*.py" ! -name "__init__.py" | sort | xargs -I{} basename {} .py | jq -R -s -c '
-            split("\n") | map(select(length > 0)) | map({
-              name: .,
-              version: "1.0",
-              domain: "",
-              description: ((.[0:1] | ascii_upcase) + .[1:] + " Scraper"),
-              last_modified: "'$DAY_NOW'"
-            })')
+          python3 - <<PYEOF
+import os, json
+from datetime import datetime, timezone
 
-          jq --arg iso "$ISO_NOW" \
-             --argjson scrapers "$SCRAPERS_JSON" \
-             '.last_update = $iso | .scrapers = $scrapers' \
-             manifest.json > temp.json && mv temp.json manifest.json
+scrapers_dir = "scrapers"
+day = "$DAY_NOW"
+iso = "$ISO_NOW"
+
+scrapers = []
+if os.path.isdir(scrapers_dir):
+    for f in sorted(os.listdir(scrapers_dir)):
+        if f.endswith(".py") and f != "__init__.py":
+            name = f[:-3]
+            scrapers.append({
+                "name": name,
+                "version": "1.0",
+                "domain": "",
+                "description": name[0].upper() + name[1:] + " Scraper",
+                "last_modified": day
+            })
+
+manifest = {
+    "version": "1.0",
+    "last_update": iso,
+    "scrapers": scrapers
+}
+
+with open("manifest.json", "w") as fh:
+    json.dump(manifest, fh, indent=2)
+
+print("manifest.json geschrieben mit %d scrapers" % len(scrapers))
+PYEOF
 
       - name: Commit and Push
         run: |
