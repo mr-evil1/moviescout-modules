@@ -23,16 +23,14 @@ jobs:
           ISO_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           DAY_NOW=$(date -u +"%Y-%m-%d")
 
-          if [ ! -f manifest.json ]; then
-            echo '{"version":"1.0","last_update":"","scrapers":[]}' > manifest.json
-          fi
+          echo '{"version":"1.0","last_update":"","scrapers":[]}' > manifest.json
 
-          SCRAPERS_JSON=$(find scrapers -name "*.py" -not -name "__init__.py" -printf "%f\n" | sort | jq -R -s -c '
+          SCRAPERS_JSON=$(find scrapers -name "*.py" ! -name "__init__.py" | sort | xargs -I{} basename {} .py | jq -R -s -c '
             split("\n") | map(select(length > 0)) | map({
-              name: . | sub(".py$"; ""),
+              name: .,
               version: "1.0",
               domain: "",
-              description: (. | sub(".py$"; "") | (.[0:1] | ascii_upcase) + .[1:] + " Scraper"),
+              description: ((.[0:1] | ascii_upcase) + .[1:] + " Scraper"),
               last_modified: "'$DAY_NOW'"
             })')
 
