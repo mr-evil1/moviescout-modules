@@ -1,0 +1,45 @@
+name: Sync Manifest with Files
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scrapers/**'
+
+jobs:
+  sync-manifest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Rebuild Scrapers in Manifest
+        run: |
+          ISO_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          DAY_NOW=$(date -u +"%Y-%m-%d")
+
+          SCRAPERS_JSON=$(find scrapers -name "*.py" -not -name "__init__.py" -printf "%f\n" | sort | jq -R -s -c '
+            split("\n") | map(select(length > 0)) | map({
+              name: . | sub(".py$"; ""),
+              version: "1.0",
+              domain: "",
+              description: (. | sub(".py$"; "") | (.[0:1] | ascii_upcase) + .[1:] + " Scraper"),
+              last_modified: "'$DAY_NOW'"
+            })')
+
+          jq --arg iso "$ISO_NOW" \
+             --argjson scrapers "$SCRAPERS_JSON" \
+             '.last_update = $iso | .scrapers = $scrapers' \
+             manifest.json > temp.json && mv temp.json manifest.json
+
+      - name: Commit and Push
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add manifest.json
+          git commit -m "Auto-sync manifest [skip ci]" || exit 0
+          git push
