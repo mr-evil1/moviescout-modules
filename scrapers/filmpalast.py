@@ -45,6 +45,47 @@ def _quality_from_text(text):
     return 'HD'
 
 
+def _resolve_vidara(url):
+    try:
+        filecode = [p for p in url.rstrip('/').split('/') if p][-1]
+        r = requests.post(
+            'https://vidara.so/api/stream',
+            headers={'User-Agent': _UA, 'Content-Type': 'application/json'},
+            json={'filecode': filecode, 'device': 'web'},
+            timeout=10
+        )
+        resolved = r.json().get('streaming_url')
+        if resolved:
+            return resolved, True
+    except Exception:
+        pass
+    return url, False
+
+
+def _resolve_vidsonic(url):
+    try:
+        html = _get(url, url)
+        if html:
+            m = re.search(r"const _0x1 = '([^']+)'", html)
+            if m:
+                clean = m.group(1).replace('|', '')
+                out = ''.join(chr(int(clean[i:i+2], 16)) for i in range(0, len(clean), 2))
+                stream_url = out[::-1]
+                if stream_url.startswith('http'):
+                    return stream_url, True
+    except Exception:
+        pass
+    return url, False
+
+
+def _try_resolve(url):
+    if 'vidara' in url:
+        return _resolve_vidara(url)
+    if 'vidsonic' in url:
+        return _resolve_vidsonic(url)
+    return url, False
+
+
 def _extract_hosters_from_page(page_url):
     html = _get(page_url, _base())
     quality = 'HD'
@@ -94,23 +135,27 @@ def _find_page_url(title, year, season=0):
 def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
     if url:
         raw = _extract_hosters_from_page(url)
-        return [(name, hurl, False) for name, hurl, _ in raw]
+    else:
+        page_url = _find_page_url(title, year, season)
+        if not page_url:
+            return []
+        raw = _extract_hosters_from_page(page_url)
 
-    page_url = _find_page_url(title, year, season)
-    if not page_url:
-        return []
-    raw = _extract_hosters_from_page(page_url)
-    return [(name, hurl, False) for name, hurl, _ in raw]
+    result = []
+    for name, hurl, _ in raw:
+        resolved_url, is_resolved = _try_resolve(hurl)
+        result.append((name, resolved_url, is_resolved))
+    return result
 
 
 def load(url='', params=None):
     if url:
         return _browse_entries(url)
     return [
-        {'title': 'Neu',        'url': _base() + '/movies/new',   'next_func': 'load', 'is_playable': False},
-        {'title': 'Top',        'url': _base() + '/movies/top',   'next_func': 'load', 'is_playable': False},
-        {'title': 'Serien',     'url': _base() + '/serien/view',  'next_func': 'load', 'is_playable': False},
-        {'title': 'Suche',      'url': '',                         'next_func': 'load', 'is_playable': False},
+        {'title': 'Neu',    'url': _base() + '/movies/new',  'next_func': 'load', 'is_playable': False},
+        {'title': 'Top',    'url': _base() + '/movies/top',  'next_func': 'load', 'is_playable': False},
+        {'title': 'Serien', 'url': _base() + '/serien/view', 'next_func': 'load', 'is_playable': False},
+        {'title': 'Suche',  'url': '',                        'next_func': 'load', 'is_playable': False},
     ]
 
 
