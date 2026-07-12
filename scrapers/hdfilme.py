@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
-import requests
+from resources.lib import multiquest, log
 
 SITE_ID       = 'hdfilme'
 SITE_NAME     = 'HD Filme'
@@ -20,10 +20,11 @@ def _get(url, referer=None):
     if referer:
         headers['Referer'] = referer
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        r = multiquest.get(url, headers=headers, timeout=10)
         r.raise_for_status()
         return r.text
     except Exception:
+        log.error()
         return ''
 
 
@@ -69,7 +70,8 @@ def _extract_hosters_from_page(page_url):
 
 
 def _find_page_url(title, year, season=0):
-    search_url = _base() + '/index.php?do=search&subaction=search&story=%s' % requests.utils.quote(title)
+    from urllib.parse import quote as _quote
+    search_url = _base() + '/index.php?do=search&subaction=search&story=%s' % _quote(title)
     html = _get(search_url)
     for s_url, s_title, s_year in re.findall(
         r'class="thumb".*?href="([^"]+)".*?title="([^"]+)".*?_year">([^<]+)', html, re.S
@@ -173,5 +175,6 @@ def _browse_entries(url):
 
 
 def search(query='', params=None):
-    url = _base() + '/index.php?do=search&subaction=search&story=%s' % requests.utils.quote(query)
+    from urllib.parse import quote as _quote
+    url = _base() + '/index.php?do=search&subaction=search&story=%s' % _quote(query)
     return _browse_entries(url)
