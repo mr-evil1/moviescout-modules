@@ -1,12 +1,19 @@
 {
   "version": "1.0",
-  "last_update": "2026-07-12T12:26:37Z",
+  "last_update": "2026-07-12T16:09:02Z",
   "scrapers": [
     {
       "name": "filmpalast",
       "version": "1.0",
       "domain": "",
       "description": "Filmpalast Scraper",
+      "last_modified": "2026-07-12"
+    },
+    {
+      "name": "hdfilme",
+      "version": "1.0",
+      "domain": "",
+      "description": "Hdfilme Scraper",
       "last_modified": "2026-07-12"
     },
     {
