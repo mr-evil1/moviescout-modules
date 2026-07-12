@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#1
+#2
 import re
 from resources.lib import multiquest, log
 
@@ -183,6 +183,9 @@ def _browse_entries(url):
 
         if not s_name or not s_url:
             continue
+        s_name = re.sub(r'\s+stream\s*$', '', s_name, flags=re.I).strip()
+        if not s_name:
+            continue
         if s_url.startswith('//'):
             s_url = 'https:' + s_url
         elif not s_url.startswith('http'):
@@ -197,17 +200,30 @@ def _browse_entries(url):
 
         year_m = re.search(r'_year">([^<]+)', article)
         year   = year_m.group(1).strip() if year_m else ''
+
+        plot = ''
+        plot_m = re.search(r'<p[^>]*class="[^"]*sescri[^"]*"[^>]*>(.*?)</p>', article, re.S | re.I)
+        if not plot_m:
+            plot_m = re.search(r'<p[^>]*class="[^"]*description[^"]*"[^>]*>(.*?)</p>', article, re.S | re.I)
+        if not plot_m:
+            plot_m = re.search(r'<div[^>]*class="[^"]*description[^"]*"[^>]*>(.*?)</div>', article, re.S | re.I)
+        if plot_m:
+            plot = _clean_plot(plot_m.group(1))
+
         is_tv  = bool(re.search(r'staffel|season|serie', s_name, re.I))
 
-        items.append({
-            'title':       s_name.strip(),
+        item = {
+            'title':       s_name,
             'url':         s_url,
             'poster':      thumb,
             'year':        year,
             'mediatype':   'tvshow' if is_tv else 'movie',
             'next_func':   'get_hosters',
             'is_playable': True,
-        })
+        }
+        if plot:
+            item['plot'] = plot
+        items.append(item)
 
     next_m = re.search(r'href="([^"]+)">(?:›|&rsaquo;|Next|Weiter)</a>', html, re.I)
     if not next_m:
