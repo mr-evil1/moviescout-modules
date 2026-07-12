@@ -1,13 +1,20 @@
 {
   "version": "1.0",
-  "last_update": "2026-07-11T18:49:27Z",
+  "last_update": "2026-07-12T11:27:59Z",
   "scrapers": [
     {
       "name": "filmpalast",
       "version": "1.0",
       "domain": "",
       "description": "Filmpalast Scraper",
-      "last_modified": "2026-07-11"
+      "last_modified": "2026-07-12"
+    },
+    {
+      "name": "megakino",
+      "version": "1.0",
+      "domain": "",
+      "description": "Megakino Scraper",
+      "last_modified": "2026-07-12"
     }
   ]
 }
