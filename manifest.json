@@ -1,7 +1,14 @@
 {
   "version": "1.0",
-  "last_update": "2026-07-12T16:09:02Z",
+  "last_update": "2026-07-12T16:09:49Z",
   "scrapers": [
+    {
+      "name": "fhdfilme",
+      "version": "1.0",
+      "domain": "",
+      "description": "Fhdfilme Scraper",
+      "last_modified": "2026-07-12"
+    },
     {
       "name": "filmpalast",
       "version": "1.0",
