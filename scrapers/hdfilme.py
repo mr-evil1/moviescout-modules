@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+#1
 import re
 from resources.lib import multiquest, log
 
@@ -55,13 +56,22 @@ def _clean_plot(raw):
     return text
 
 
+def _hoster_name(url):
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url if url.startswith('http') else 'https:' + url).netloc
+        return re.sub(r'^www\.', '', host).split('.')[0].capitalize() or 'Hoster'
+    except Exception:
+        return 'Hoster'
+
+
 def _extract_hosters_from_page(page_url):
     html   = _get(page_url, _base())
     result = []
     for link in re.findall(r'data-link="([^"]+)', html):
         if not link.startswith('http'):
             link = 'https:' + link
-        result.append(('Hoster', link, 'HD'))
+        result.append((_hoster_name(link), link, 'HD'))
     plot = ''
     p = re.search(r'<p[^>]*class="[^"]*sescri[^"]*"[^>]*>(.*?)</p>', html, re.S | re.I)
     if p:
@@ -110,7 +120,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
         for link in re.findall(r'data-link="([^"]+)', html):
             if not link.startswith('http'):
                 link = 'https:' + link
-            raw.append(('Hoster', link, 'HD'))
+            raw.append((_hoster_name(link), link, 'HD'))
     else:
         page_url = _find_page_url(title, year, season)
         if not page_url:
@@ -123,7 +133,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
             for link in re.findall(r'data-link="([^"]+)', m.group(0)):
                 if not link.startswith('http'):
                     link = 'https:' + link
-                raw.append(('Hoster', link, 'HD'))
+                raw.append((_hoster_name(link), link, 'HD'))
     result = []
     for name, hurl, quality in raw:
         resolved_url, is_resolved = _try_resolve(hurl)
@@ -134,28 +144,62 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
 def load(url='', params=None):
     if url:
         return _browse_entries(url)
+    b = _base()
     return [
-        {'title': 'Neu',    'url': _base() + '/kinofilme-online/',           'next_func': 'load', 'is_playable': False},
-        {'title': 'Kino',   'url': _base() + '/aktuelle-kinofilme-im-kino/', 'next_func': 'load', 'is_playable': False},
-        {'title': 'Serien', 'url': _base() + '/serienstream-deutsch/',       'next_func': 'load', 'is_playable': False},
+        {'title': 'Neu',    'url': b + '/kinofilme-online/',           'next_func': 'load', 'is_playable': False},
+        {'title': 'Kino',   'url': b + '/aktuelle-kinofilme-im-kino/', 'next_func': 'load', 'is_playable': False},
+        {'title': 'Serien', 'url': b + '/serienstream-deutsch/',       'next_func': 'load', 'is_playable': False},
+        {'title': 'Suche',  'url': '',                                  'next_func': 'search', 'is_playable': False},
     ]
 
 
 def _browse_entries(url):
     html  = _get(url)
+    if not html:
+        log.log('hdfilme _browse_entries: leere Antwort für %s' % url, log.LOGWARNING)
+        return []
     items = []
-    for s_url, s_name, thumb, dummy in re.findall(
-        r'class="thumb"[^>]*>.*?href="([^"]+)"[^>]*title="([^"]+)".*?src="([^"]+)"(.*?)</li>',
-        html, re.S
-    ):
-        if not s_url.startswith('http'):
+
+    articles = re.findall(r'<div class="box-product(.*?)</li>', html, re.S)
+    if not articles:
+        articles = re.findall(r'<article[^>]*>(.*?)</article>', html, re.S)
+    if not articles:
+        articles = re.findall(r'<li[^>]*class="[^"]*item[^"]*"[^>]*>(.*?)</li>', html, re.S)
+
+    log.log('hdfilme _browse_entries: %d Artikel gefunden für %s' % (len(articles), url))
+
+    for article in articles:
+        url_m = re.search(r'href="([^"]+)"[^>]*title="([^"]+)"', article, re.I)
+        if url_m:
+            s_url  = url_m.group(1)
+            s_name = url_m.group(2)
+        else:
+            url_m = re.search(r'href="([^"]+)"', article, re.I)
+            if not url_m:
+                continue
+            s_url  = url_m.group(1)
+            h3_m   = re.search(r'<h3[^>]*>(.*?)</h3>', article, re.S | re.I)
+            s_name = re.sub(r'<[^>]+>', '', h3_m.group(1)).strip() if h3_m else ''
+
+        if not s_name or not s_url:
+            continue
+        if s_url.startswith('//'):
+            s_url = 'https:' + s_url
+        elif not s_url.startswith('http'):
             s_url = _base() + '/' + s_url.lstrip('/')
+
+        thumb_m = (re.search(r'data-src="(/files/[^"]+)"', article, re.I) or
+                   re.search(r'data-src="([^"]+)"', article, re.I) or
+                   re.search(r'src="(/files/[^"]+)"', article, re.I))
+        thumb = thumb_m.group(1) if thumb_m else ''
         if thumb.startswith('/'):
             thumb = _base() + thumb
-        year_m = re.search(r'_year">([^<]+)', dummy)
+
+        year_m = re.search(r'_year">([^<]+)', article)
         year   = year_m.group(1).strip() if year_m else ''
         is_tv  = bool(re.search(r'staffel|season|serie', s_name, re.I))
-        item   = {
+
+        items.append({
             'title':       s_name.strip(),
             'url':         s_url,
             'poster':      thumb,
@@ -163,14 +207,18 @@ def _browse_entries(url):
             'mediatype':   'tvshow' if is_tv else 'movie',
             'next_func':   'get_hosters',
             'is_playable': True,
-        }
-        items.append(item)
-    next_m = re.search(r'href="([^"]+)">›</a>', html)
+        })
+
+    next_m = re.search(r'href="([^"]+)">(?:›|&rsaquo;|Next|Weiter)</a>', html, re.I)
+    if not next_m:
+        next_m = re.search(r'class="[^"]*next[^"]*"[^>]*href="([^"]+)"', html, re.I)
     if next_m:
         next_url = next_m.group(1)
         if next_url.startswith('/'):
             next_url = _base() + next_url
         items.append({'title': '[B]>>> Weiter[/B]', 'url': next_url, 'next_func': 'load', 'is_playable': False})
+
+    log.log('hdfilme _browse_entries: %d Items zurückgegeben' % len(items))
     return items
 
 
