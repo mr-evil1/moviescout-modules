@@ -7,7 +7,7 @@ SITE_NAME     = 'FHD Filme'
 SITE_DOMAIN   = 'hdfilme.win'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
-SCRAPER_TIMEOUT  = 25
+
 
 _UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
