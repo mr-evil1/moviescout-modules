@@ -9,7 +9,7 @@ SITE_NAME     = 'Megakino'
 SITE_DOMAIN   = 'megakino.live'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
-
+SCRAPER_TIMEOUT  = 25
 _UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 
 _BASE_URL = None
