@@ -1,19 +1,12 @@
 {
   "version": "1.0",
-  "last_update": "2026-07-23T19:12:51Z",
+  "last_update": "2026-07-23T19:13:13Z",
   "scrapers": [
     {
       "name": "evil",
       "version": "1.0",
       "domain": "",
       "description": "Evil Scraper",
-      "last_modified": "2026-07-23"
-    },
-    {
-      "name": "fhdfilme",
-      "version": "1.0",
-      "domain": "",
-      "description": "Fhdfilme Scraper",
       "last_modified": "2026-07-23"
     },
     {
