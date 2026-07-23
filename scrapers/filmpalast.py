@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
-import requests
+from resources.lib import multiquest, log
 
 SITE_ID      = 'filmpalast'
 SITE_NAME    = 'FilmPalast'
@@ -21,10 +21,11 @@ def _get(url, referer=None):
     if referer:
         headers['Referer'] = referer
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        r = multiquest.get(url, headers=headers, timeout=10)
         r.raise_for_status()
         return r.text
     except Exception:
+        log.error()
         return ''
 
 
@@ -44,46 +45,6 @@ def _quality_from_text(text):
         return '720p'
     return 'HD'
 
-
-def _resolve_vidara(url):
-    try:
-        filecode = [p for p in url.rstrip('/').split('/') if p][-1]
-        r = requests.post(
-            'https://vidara.so/api/stream',
-            headers={'User-Agent': _UA, 'Content-Type': 'application/json'},
-            json={'filecode': filecode, 'device': 'web'},
-            timeout=10
-        )
-        resolved = r.json().get('streaming_url')
-        if resolved:
-            return resolved, True
-    except Exception:
-        pass
-    return url, False
-
-
-def _resolve_vidsonic(url):
-    try:
-        html = _get(url, url)
-        if html:
-            m = re.search(r"const _0x1 = '([^']+)'", html)
-            if m:
-                clean = m.group(1).replace('|', '')
-                out = ''.join(chr(int(clean[i:i+2], 16)) for i in range(0, len(clean), 2))
-                stream_url = out[::-1]
-                if stream_url.startswith('http'):
-                    return stream_url, True
-    except Exception:
-        pass
-    return url, False
-
-
-def _try_resolve(url):
-    if 'vidara' in url:
-        return _resolve_vidara(url)
-    if 'vidsonic' in url:
-        return _resolve_vidsonic(url)
-    return url, False
 
 
 def _clean_plot(raw):
@@ -129,7 +90,8 @@ def _extract_hosters_from_page(page_url):
 
 
 def _find_page_url(title, year, season=0):
-    search_url = _base() + '/search/title/' + requests.utils.quote(title)
+    from urllib.parse import quote as _quote
+    search_url = _base() + '/search/title/' + _quote(title)
     html = _get(search_url, _base())
     content_m = re.search(r'id="content"[^>]*>(.+?)<div id="paging"', html, re.S | re.I)
     if not content_m:
@@ -205,11 +167,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
             return []
         raw, _ = _extract_hosters_from_page(page_url)
 
-    result = []
-    for name, hurl, _ in raw:
-        resolved_url, is_resolved = _try_resolve(hurl)
-        result.append((name, resolved_url, is_resolved))
-    return result
+    return [(name, hurl, False, quality, '') for name, hurl, quality in raw]
 
 
 _S_FILME    = '__fp_filme__'
@@ -436,5 +394,6 @@ def _browse_entries(url):
 
 
 def search(query='', params=None):
-    url = _base() + '/search/title/' + requests.utils.quote(query)
+    from urllib.parse import quote as _quote
+    url = _base() + '/search/title/' + _quote(query)
     return _browse_entries(url)
