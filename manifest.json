@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_update": "2026-07-23T19:13:29Z",
+  "last_update": "2026-07-23T19:13:42Z",
   "scrapers": [
     {
       "name": "evil",
@@ -14,13 +14,6 @@
       "version": "1.0",
       "domain": "",
       "description": "Filmpalast Scraper",
-      "last_modified": "2026-07-23"
-    },
-    {
-      "name": "megakino",
-      "version": "1.0",
-      "domain": "",
-      "description": "Megakino Scraper",
       "last_modified": "2026-07-23"
     }
   ]
