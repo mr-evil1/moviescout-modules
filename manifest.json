@@ -1,34 +1,41 @@
 {
   "version": "1.0",
-  "last_update": "2026-07-12T19:56:24Z",
+  "last_update": "2026-07-23T19:12:51Z",
   "scrapers": [
+    {
+      "name": "evil",
+      "version": "1.0",
+      "domain": "",
+      "description": "Evil Scraper",
+      "last_modified": "2026-07-23"
+    },
     {
       "name": "fhdfilme",
       "version": "1.0",
       "domain": "",
       "description": "Fhdfilme Scraper",
-      "last_modified": "2026-07-12"
+      "last_modified": "2026-07-23"
     },
     {
       "name": "filmpalast",
       "version": "1.0",
       "domain": "",
       "description": "Filmpalast Scraper",
-      "last_modified": "2026-07-12"
+      "last_modified": "2026-07-23"
     },
     {
       "name": "hdfilme",
       "version": "1.0",
       "domain": "",
       "description": "Hdfilme Scraper",
-      "last_modified": "2026-07-12"
+      "last_modified": "2026-07-23"
     },
     {
       "name": "megakino",
       "version": "1.0",
       "domain": "",
       "description": "Megakino Scraper",
-      "last_modified": "2026-07-12"
+      "last_modified": "2026-07-23"
     }
   ]
 }
