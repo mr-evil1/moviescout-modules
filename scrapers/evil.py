@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import re
 import time
 import random
@@ -61,6 +60,12 @@ def _unpack_js(packed):
     return re.sub(r'\b\w+\b', replace_word, p_val)
 
 
+_SKIP_DOMAINS = (
+    'googletagmanager.com', 'google-analytics.com', 'googlesyndication.com',
+    'doubleclick.net', 'googleapis.com', 'gstatic.com',
+    'facebook.com', 'twitter.com', 'instagram.com',
+)
+
 _STREAM_PATTERNS = [
     r'(https?://[^\s"\'<>]+\.m3u8(?:[^\s"\'<>]*)?)',
     r'(?:file|wurl|src|source)\s*[=:]\s*["\']?(https?://[^\s"\'<>,\]]+)',
@@ -73,7 +78,7 @@ def _find_stream(text):
         m = re.search(pat, text)
         if m:
             u = (m.group(2) if m.lastindex and m.lastindex >= 2 else m.group(1)).strip('"\'')
-            if u and u.startswith('http'):
+            if u and u.startswith('http') and not any(d in u.lower() for d in _SKIP_DOMAINS):
                 return u
     return None
 
@@ -400,3 +405,147 @@ def resolve(url):
     except Exception:
         log.error()
     return url, False
+
+
+_TRIGGER = 'meinecloud.click'
+
+_SKIP = re.compile(
+    r'/vod/vpn|youtube\.com|embed-\.html|/e/\s*$|/e/\s*"|'
+    r'mixdrop\.co/e/\s*$|supervideo\.cc/embed-s\.html$',
+    re.I
+)
+
+
+def is_cloud_url(url):
+    return _TRIGGER in url
+
+
+def _normalise_link(link):
+    link = link.strip()
+    if link.startswith('//'):
+        link = 'https:' + link
+    return link
+
+
+def _quality_from_text(text):
+    t = text.upper()
+    if '2160' in t or '4K' in t:
+        return '4K'
+    if '1080' in t:
+        return '1080p'
+    if '720' in t:
+        return '720p'
+    return 'HD'
+
+
+def _hosters_from_section(section):
+    result = []
+    seen   = set()
+    for full_li in re.findall(r'<li[^>]*(?:data-link="[^"]*")?[^>]*>.*?</li>', section, re.S | re.I):
+        m = re.search(r'data-link="([^"]+)"', full_li)
+        if not m:
+            continue
+        raw = m.group(1)
+        if _SKIP.search(raw):
+            continue
+        if raw in seen:
+            continue
+        seen.add(raw)
+        link  = _normalise_link(raw)
+        body  = re.sub(r'<[^>]+>', '', full_li)
+        label = re.sub(r'\s+', ' ', body).strip() or 'Hoster'
+        qual  = _quality_from_text(label)
+        result.append((label, link, qual))
+    return result
+
+
+def _resolve_sirius(hurl):
+    html = _get(hurl, ua=_UA)
+    if not html:
+        return []
+    html = re.sub(r'<!--.*?-->', '', html, flags=re.S)
+    return _hosters_from_section(html)
+
+
+def _sid_for_season(html, season):
+    for sid, label in re.findall(r'data-season="(\d+)"[^>]*>\s*(S\d+)\s*<', html):
+        m = re.match(r'S(\d+)', label.strip())
+        if m and int(m.group(1)) == season:
+            return sid
+    return None
+
+
+def _episode_hosters_new(html, season, episode):
+    sid = _sid_for_season(html, season)
+    if not sid:
+        return []
+    bm = re.search(
+        r'class="[^"]*_season-eps[^"]*"[^>]*data-season="%s"[^>]*>(.*?)(?=<div[^>]*class="[^"]*_season-eps|$)' % sid,
+        html, re.S
+    )
+    if not bm:
+        return []
+    block   = bm.group(1)
+    ep_divs = re.split(r'(?=<div[^>]*class="[^"]*\b_ep\b[^"]*"[^>]*data-link=)', block)
+    for ep in ep_divs:
+        n_m = re.search(r'class="[^"]*_ep-n[^"]*">\s*(\d+)\s*<', ep)
+        if not n_m or int(n_m.group(1)) != episode:
+            continue
+        link_m  = re.search(r'data-link="([^"]+)"', ep)
+        if not link_m:
+            continue
+        label_m = re.search(r'data-label="([^"]+)"', ep)
+        raw     = link_m.group(1).strip()
+        link    = ('https:' + raw) if raw.startswith('//') else raw
+        label   = label_m.group(1) if label_m else ('S%d E%d' % (season, episode))
+        return [(label, link, 'HD')]
+    return []
+
+
+def _episode_hosters_legacy(html, season, episode):
+    pat = r'id="serie-%d_%d"(.*?)(?=<li\s+id="serie-\d|$)' % (season, episode)
+    m   = re.search(pat, html, re.S)
+    if not m:
+        m = re.search(r'id="serie-1_%d"(.*?)(?=<li\s+id="serie-1_\d|$)' % episode, html, re.S)
+    if not m:
+        return []
+    return _hosters_from_section(m.group(1))
+
+
+def _episode_hosters_from_html(html, season, episode):
+    result = _episode_hosters_new(html, season, episode)
+    if not result:
+        result = _episode_hosters_legacy(html, season, episode)
+    return result
+
+
+def _cloud_expand(raw_list):
+    result = []
+    for name, hurl, quality in raw_list:
+        if _TRIGGER in hurl:
+            for sub_name, sub_url, sub_qual in _resolve_sirius(hurl):
+                result.append((sub_name, sub_url, False))
+        else:
+            result.append((name, hurl, False))
+    return result
+
+
+def get_movie(imdb_id):
+    html = _get('https://meinecloud.click/movie/%s' % imdb_id, ua=_UA)
+    if not html:
+        return []
+    return _cloud_expand(_hosters_from_section(html))
+
+
+def get_episode(imdb_id, season, episode):
+    imdb_num = re.sub(r'[^0-9]', '', str(imdb_id))
+    html     = _get('https://meinecloud.click/serial/%s' % imdb_num, ua=_UA)
+    raw      = _episode_hosters_from_html(html, season, episode)
+    if not raw:
+        html = _get('https://meinecloud.click/serial/%s' % imdb_id, ua=_UA)
+        raw  = _episode_hosters_from_html(html, season, episode)
+    return _cloud_expand(raw)
+
+
+def resolve_page(url, referer=None):
+    return _resolve_sirius(url)
