@@ -372,6 +372,108 @@ def _resolve_generic(url):
     return url, False
 
 
+def _resolve_bsto(url):
+    import json as _json
+    from resources.lib.captcha.captcha_helper import solve_recaptcha, extract_recaptcha_sitekey
+
+    base = 'https://burningseries.ac'
+    try:
+        sess = multiquest.Session(headers={
+            'User-Agent':      _UA,
+            'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+            'Referer':         base,
+        })
+        r         = sess.get(url, timeout=10)
+        html      = r.text
+        final_url = r.url or url
+    except Exception:
+        log.error()
+        return url, False
+
+    sitekey = extract_recaptcha_sitekey(html)
+    if not sitekey:
+        return url, False
+
+    try:
+        captcha_token = solve_recaptcha(sitekey, final_url)
+    except Exception:
+        log.error()
+        captcha_token = ''
+
+    lid_m   = re.search(r'data-lid=["\']([^"\']+)["\']', html)
+    token_m = re.search(r'security_token["\']?\s+content=["\']([^"\']+)["\']', html, re.I)
+
+    if not lid_m or not token_m:
+        sess.close()
+        return url, False
+
+    try:
+        resp = sess.post(
+            base + '/ajax/embed.php',
+            data={
+                'token':  token_m.group(1),
+                'LID':    lid_m.group(1),
+                'ticket': captcha_token or '',
+            },
+            headers={
+                'Accept':           'application/json, text/javascript, */*; q=0.01',
+                'Content-Type':     'application/x-www-form-urlencoded; charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Origin':           base,
+                'Referer':          final_url,
+            },
+        )
+        link = _json.loads(resp.text).get('link', '')
+        if link:
+            try:
+                import resolveurl
+                hmf = resolveurl.HostedMediaFile(url=link)
+                if hmf.valid_url():
+                    stream = hmf.resolve()
+                    if stream:
+                        return stream, True
+            except Exception:
+                log.error()
+            stream_url, ok = resolve(link)
+            if ok and stream_url:
+                return stream_url, True
+            return link, True
+    except Exception:
+        log.error()
+    finally:
+        sess.close()
+
+    return url, False
+
+
+def _resolve_vidmoly(url):
+    try:
+        m = re.search(r'vidmoly\.me/(?:w|e)/([a-zA-Z0-9]+)', url)
+        if not m:
+            return url, False
+        code = m.group(1)
+        embed = 'https://vidmoly.me/embed-%s.html' % code
+        html = _get(embed, 'https://vidmoly.me/')
+        if not html:
+            return url, False
+        if 'eval(function(p,a,c,k' in html:
+            html = _unpack_packer(html)
+        for pat in (
+            r'sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+            r'["\']file["\']\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+            r'["\']((?:https?:)?//[^"\']+\.m3u8[^"\']*)["\']',
+        ):
+            mm = re.search(pat, html, re.I)
+            if mm:
+                su = mm.group(1)
+                if su.startswith('//'):
+                    su = 'https:' + su
+                return su + '|Referer=https://vidmoly.me/&User-Agent=' + _MOB.replace(' ', '%20'), True
+    except Exception:
+        log.error()
+    return url, False
+
+
 _VIDARA_HOSTS  = ('vidara.', 'vidaraa.', 'vidsonic.', 'vidmatrixa.', 'viewdara.', 'thebesthosterv.')
 _DOOD_HOSTS    = ('dood.', 'doodstream.')
 
@@ -379,6 +481,8 @@ _DOOD_HOSTS    = ('dood.', 'doodstream.')
 def resolve(url):
     try:
         u = url.lower()
+        if 'burningseries.ac' in u:
+            return _resolve_bsto(url)
         if any(h in u for h in _VIDARA_HOSTS):
             return _resolve_vidara(url)
         if 'vidsonic.' in u:
@@ -401,6 +505,8 @@ def resolve(url):
             return _resolve_playmate(url)
         if any(h in u for h in _DOOD_HOSTS):
             return _resolve_dood(url)
+        if 'vidmoly.' in u:
+            return _resolve_vidmoly(url)
         return _resolve_generic(url)
     except Exception:
         log.error()
