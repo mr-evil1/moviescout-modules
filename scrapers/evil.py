@@ -478,9 +478,14 @@ _VIDARA_HOSTS  = ('vidara.', 'vidaraa.', 'vidsonic.', 'vidmatrixa.', 'viewdara.'
 _DOOD_HOSTS    = ('dood.', 'doodstream.')
 
 
+_DIRECT_EXTS = ('.mp4', '.mkv', '.m3u8', '.ts', '.avi', '.mov', '.mpd')
+
 def resolve(url):
     try:
         u = url.lower()
+        p = u.split('?')[0]
+        if any(p.endswith(e) for e in _DIRECT_EXTS):
+            return url, True
         if 'burningseries.ac' in u:
             return _resolve_bsto(url)
         if any(h in u for h in _VIDARA_HOSTS):
