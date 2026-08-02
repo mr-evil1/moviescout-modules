@@ -95,16 +95,11 @@ class VavooClient:
         data = self._post(self._path('catalog'), self._build_payload())
         return isinstance(data, dict) and 'items' in data
 
-    def get_all_channels(self, adult=True):
-        first = self._post(self._path('catalog'), self._build_payload(cursor=None, adult=adult))
-        channels = list(first.get('items') or [])
-        first_cursor = first.get('nextCursor')
-        if not first_cursor:
-            return channels
-
-        collected = {0: channels}
+    def get_all_channels(self, adult=True, progress_callback=None):
+        pages = {}
         lock = threading.Lock()
-        cursors_done = set()
+        threads = []
+        total_count = [0]
 
         def fetch_page(cursor, slot):
             try:
@@ -115,23 +110,44 @@ class VavooClient:
                 items = []
                 next_c = None
             with lock:
-                collected[slot] = items
-                if next_c and next_c not in cursors_done:
-                    cursors_done.add(next_c)
+                pages[slot] = items
+                total_count[0] += len(items)
+                if next_c:
                     t = threading.Thread(target=fetch_page, args=(next_c, slot + 1))
                     t.daemon = True
+                    threads.append(t)
                     t.start()
 
-        cursors_done.add(first_cursor)
-        t0 = threading.Thread(target=fetch_page, args=(first_cursor, 1))
+        t0 = threading.Thread(target=fetch_page, args=(None, 0))
         t0.daemon = True
+        threads.append(t0)
         t0.start()
-        t0.join(timeout=self._timeout)
 
-        for slot in sorted(collected):
-            if slot == 0:
-                continue
-            channels.extend(collected[slot])
+        deadline = time.time() + self._timeout
+        while True:
+            with lock:
+                alive = [t for t in threads if t.is_alive()]
+                current_total = total_count[0]
+            if progress_callback:
+                try:
+                    progress_callback(current_total, bool(alive))
+                except Exception:
+                    pass
+            if not alive:
+                break
+            if time.time() > deadline:
+                break
+            time.sleep(0.3)
+
+        if progress_callback:
+            try:
+                progress_callback(total_count[0], False)
+            except Exception:
+                pass
+
+        channels = []
+        for slot in sorted(pages):
+            channels.extend(pages[slot])
         return channels
 
     def _resolve_task_request(self, task_id, task_data):
