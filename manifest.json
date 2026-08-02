@@ -1,20 +1,20 @@
 {
   "version": "1.0",
-  "last_update": "2026-08-01T19:19:43Z",
+  "last_update": "2026-08-02T12:11:16Z",
   "scrapers": [
     {
       "name": "evil",
       "version": "1.0",
       "domain": "",
       "description": "Evil Scraper",
-      "last_modified": "2026-08-01"
+      "last_modified": "2026-08-02"
     },
     {
       "name": "filmpalast",
       "version": "1.0",
       "domain": "",
       "description": "Filmpalast Scraper",
-      "last_modified": "2026-08-01"
+      "last_modified": "2026-08-02"
     }
   ]
 }
