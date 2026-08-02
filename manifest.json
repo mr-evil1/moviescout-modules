@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_update": "2026-08-02T12:12:14Z",
+  "last_update": "2026-08-02T12:37:26Z",
   "scrapers": [
     {
       "name": "animetoast",
@@ -154,6 +154,13 @@
       "version": "1.0",
       "domain": "",
       "description": "Vavoo Scraper",
+      "last_modified": "2026-08-02"
+    },
+    {
+      "name": "vavootv",
+      "version": "1.0",
+      "domain": "",
+      "description": "Vavootv Scraper",
       "last_modified": "2026-08-02"
     },
     {
