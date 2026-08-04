@@ -1,181 +1,181 @@
 {
   "version": "1.0",
-  "last_update": "2026-08-02T19:52:20Z",
+  "last_update": "2026-08-04T09:16:23Z",
   "scrapers": [
     {
       "name": "animetoast",
       "version": "1.0",
       "domain": "",
       "description": "Animetoast Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "aniworld",
       "version": "1.0",
       "domain": "",
       "description": "Aniworld Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "bsto",
       "version": "1.0",
       "domain": "",
       "description": "Bsto Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "einschalten",
       "version": "1.0",
       "domain": "",
       "description": "Einschalten Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "evil",
       "version": "1.0",
       "domain": "",
       "description": "Evil Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "fhdfilme",
       "version": "1.0",
       "domain": "",
       "description": "Fhdfilme Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "filmpalast",
       "version": "1.0",
       "domain": "",
       "description": "Filmpalast Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "filmpro",
       "version": "1.0",
       "domain": "",
       "description": "Filmpro Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "gezkino",
       "version": "1.0",
       "domain": "",
       "description": "Gezkino Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "hdfilme",
       "version": "1.0",
       "domain": "",
       "description": "Hdfilme Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "internetarchive",
       "version": "1.0",
       "domain": "",
       "description": "Internetarchive Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "kinofun",
       "version": "1.0",
       "domain": "",
       "description": "Kinofun Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "kinoger",
       "version": "1.0",
       "domain": "",
       "description": "Kinoger Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "kinokiste",
       "version": "1.0",
       "domain": "",
       "description": "Kinokiste Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "kkiste",
       "version": "1.0",
       "domain": "",
       "description": "Kkiste Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "livetv",
       "version": "1.0",
       "domain": "",
       "description": "Livetv Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "megakino",
       "version": "1.0",
       "domain": "",
       "description": "Megakino Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "movie2k",
       "version": "1.0",
       "domain": "",
       "description": "Movie2k Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "netzkino",
       "version": "1.0",
       "domain": "",
       "description": "Netzkino Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "serienstream",
       "version": "1.0",
       "domain": "",
       "description": "Serienstream Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "streamcloud",
       "version": "1.0",
       "domain": "",
       "description": "Streamcloud Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "topstreamfilm",
       "version": "1.0",
       "domain": "",
       "description": "Topstreamfilm Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "vavoo",
       "version": "1.0",
       "domain": "",
       "description": "Vavoo Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "vavootv",
       "version": "1.0",
       "domain": "",
       "description": "Vavootv Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     },
     {
       "name": "vixstream",
       "version": "1.0",
       "domain": "",
       "description": "Vixstream Scraper",
-      "last_modified": "2026-08-02"
+      "last_modified": "2026-08-04"
     }
   ]
 }
