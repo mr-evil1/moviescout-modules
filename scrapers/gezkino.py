@@ -142,12 +142,21 @@ def _browse_term(term):
 def _browse_genre(genre):
     if genre == 'Alle':
         return [_entry_to_item(e) for e in _query_all()]
-    items = []
-    for e in _query_all():
-        genres = _get_tmdb_genres(_cleantitle(e.get('title', '')))
-        if genre in genres:
-            items.append(_entry_to_item(e))
-    return items
+    entries = _query_all()
+    if not entries:
+        return []
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    genre_cache = {}
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futures = {ex.submit(_get_tmdb_genres, _clean_entry_title(e.get('title', ''))): i
+                   for i, e in enumerate(entries)}
+        for f in as_completed(futures):
+            genre_cache[futures[f]] = f.result()
+    return [
+        _entry_to_item(entries[i])
+        for i, e in enumerate(entries)
+        if genre in genre_cache.get(i, [])
+    ]
 
 
 def _browse_az(char):
