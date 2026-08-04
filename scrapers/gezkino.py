@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import re
 import json
+import os
+import time
 from resources.lib import multiquest, log
 
 SITE_ID       = 'gezkino'
@@ -45,7 +47,43 @@ _GENRES_MAP = {
     18: 'Drama', 10751: 'Familie', 14: 'Fantasy', 27: 'Horror', 9648: 'Mystery',
     10749: 'Romanze', 878: 'Sci-Fi', 53: 'Thriller', 37: 'Western',
 }
-_TMDB_KEY = '60b3801a9e76b5706ee2a432f06423e6'
+_TMDB_KEY       = '60b3801a9e76b5706ee2a432f06423e6'
+_GENRE_CACHE_TTL = 6 * 3600
+
+
+def _genre_cache_path():
+    try:
+        from resources.lib.control import addonProfile
+        return os.path.join(addonProfile(), 'gezkino_genre_cache.json')
+    except Exception:
+        return None
+
+
+def _load_genre_cache():
+    path = _genre_cache_path()
+    if not path:
+        return {}
+    try:
+        if not os.path.exists(path):
+            return {}
+        if time.time() - os.path.getmtime(path) > _GENRE_CACHE_TTL:
+            return {}
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_genre_cache(cache):
+    path = _genre_cache_path()
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def _cleantitle(title):
@@ -98,7 +136,13 @@ def _query_all(terms=None):
     return results
 
 
+_tmdb_genre_cache = {}
+
+
 def _get_tmdb_genres(title, year=''):
+    key = title.lower().strip()
+    if key in _tmdb_genre_cache:
+        return _tmdb_genre_cache[key]
     try:
         params = {'api_key': _TMDB_KEY, 'query': title, 'language': 'de-DE'}
         if year:
@@ -108,10 +152,35 @@ def _get_tmdb_genres(title, year=''):
         results = r.json().get('results', [])
         if results:
             ids = results[0].get('genre_ids', [])
-            return [_GENRES_MAP[g] for g in ids if g in _GENRES_MAP]
+            genres = [_GENRES_MAP[g] for g in ids if g in _GENRES_MAP]
+            _tmdb_genre_cache[key] = genres
+            return genres
     except Exception:
-        log.error()
+        pass
+    _tmdb_genre_cache[key] = []
     return []
+
+
+def _build_genre_cache(entries):
+    disk = _load_genre_cache()
+    _tmdb_genre_cache.update(disk)
+    seen_keys = {}
+    deduped = []
+    for e in entries:
+        k = _clean_entry_title(e.get('title', '')).lower().strip()
+        if k not in seen_keys:
+            seen_keys[k] = True
+            deduped.append(e)
+    missing = [e for e in deduped
+               if _clean_entry_title(e.get('title', '')).lower().strip() not in _tmdb_genre_cache]
+    if missing:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            futures = [ex.submit(_get_tmdb_genres, _clean_entry_title(e.get('title', ''))) for e in missing]
+            for f in as_completed(futures):
+                f.result()
+        _save_genre_cache(_tmdb_genre_cache)
+    return deduped
 
 
 def _clean_entry_title(title):
@@ -140,22 +209,16 @@ def _browse_term(term):
 
 
 def _browse_genre(genre):
-    if genre == 'Alle':
-        return [_entry_to_item(e) for e in _query_all()]
     entries = _query_all()
     if not entries:
         return []
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    genre_cache = {}
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        futures = {ex.submit(_get_tmdb_genres, _clean_entry_title(e.get('title', ''))): i
-                   for i, e in enumerate(entries)}
-        for f in as_completed(futures):
-            genre_cache[futures[f]] = f.result()
+    deduped = _build_genre_cache(entries)
+    if genre == 'Alle':
+        return [_entry_to_item(e) for e in deduped]
     return [
-        _entry_to_item(entries[i])
-        for i, e in enumerate(entries)
-        if genre in genre_cache.get(i, [])
+        _entry_to_item(e)
+        for e in deduped
+        if genre in _tmdb_genre_cache.get(_clean_entry_title(e.get('title', '')).lower().strip(), [])
     ]
 
 
@@ -302,3 +365,27 @@ def get_details(url='', params=None):
     except Exception:
         log.error()
         return {}
+
+
+def _warmup_genre_cache():
+    try:
+        import threading
+        import time
+        disk = _load_genre_cache()
+        if disk:
+            return
+        def _build():
+            try:
+                time.sleep(5)
+                entries = _query_all()
+                if entries:
+                    _build_genre_cache(entries)
+                    log.log('[gezkino] Genre-Cache im Hintergrund aufgebaut (%d Einträge)' % len(entries))
+            except Exception:
+                log.error()
+        t = threading.Thread(target=_build, daemon=True)
+        t.start()
+    except Exception:
+        pass
+
+_warmup_genre_cache()
