@@ -91,22 +91,55 @@ def _resolve_vidara(url):
         api_base = parsed.scheme + '://' + domain
         mm1      = domain in ('thebesthosterv.com', 'viewdara.com')
         api_url  = api_base + '/api/stream' + ('?mm1=' if mm1 else '')
-        r = multiquest.post(
-            api_url,
-            headers={
-                'User-Agent':   _UA,
-                'Content-Type': 'application/json',
-                'Referer':      url,
-                'Origin':       api_base,
-            },
-            json={'filecode': filecode, 'device': 'android'},
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
-        su = data.get('streaming_url') or data.get('sx') or data.get('url') or data.get('stream') or ''
-        if su and su.startswith('http'):
-            return su, True
+
+        embed_url = api_base + '/e/' + filecode
+
+        with multiquest.Session() as sess:
+            sess.headers.update({
+                'User-Agent':      _UA,
+                'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+            })
+            html = ''
+            try:
+                rg = sess.get(embed_url, headers={'Referer': api_base + '/'}, timeout=15)
+                html = rg.text
+            except Exception:
+                log.error()
+
+            try:
+                rp = sess.post(
+                    api_url,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Referer':      embed_url,
+                        'Origin':       api_base,
+                    },
+                    json={'filecode': filecode, 'device': 'android'},
+                    timeout=10,
+                )
+                rp.raise_for_status()
+                data = rp.json()
+                su = (data.get('streaming_url') or data.get('sx') or
+                      data.get('url') or data.get('stream') or
+                      data.get('hls') or data.get('source') or '')
+                if su and su.startswith('http'):
+                    return su, True
+            except Exception:
+                log.error()
+
+            if html:
+                for pat in (
+                    r'sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+                    r'["\']file["\']\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+                    r'["\']((?:https?:)?//[^"\']+\.m3u8[^"\']*)["\']',
+                ):
+                    mm = re.search(pat, html, re.I)
+                    if mm:
+                        su = mm.group(1)
+                        if su.startswith('//'):
+                            su = 'https:' + su
+                        return su + '|Referer=' + embed_url + '&User-Agent=' + _UA.replace(' ', '%20'), True
+
     except Exception:
         log.error()
     return url, False

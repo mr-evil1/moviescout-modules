@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import re
 from resources.lib import multiquest, log
 
@@ -68,21 +67,46 @@ def _extract_plot_from_detail(html):
     return ''
 
 
+_SKIP_URL  = frozenset(['jwpcdn', 'jwplayer', 'javascript', 'google', 'analytics', 'facebook'])
+_DATA_ATTRS = ('data-file', 'data-link', 'data-url', 'data-embed', 'data-src', 'data-stream', 'data-player')
+
+
+def _is_bad_url(u):
+    ul = u.lower()
+    return any(s in ul for s in _SKIP_URL) or ul.endswith('.js') or ul.endswith('.css')
+
+
 def _extract_hosters_from_page(page_url):
     html = _get(page_url, _base())
     quality = 'HD'
-    q = re.search(r'<span id=\"release_text\"[^>]*>([^<&]+)', html, re.I)
+    q = re.search(r'<span id="release_text"[^>]*>([^<&]+)', html, re.I)
     if q:
         quality = _quality_from_text(q.group(1))
-    streams = re.findall(
-        r'<p class=\"hostName\">([^<]+)</p>.*?<li[^>]*class=\"streamPlayBtn[^\"]*\".*?<a[^>]*(?:href|data-player-url)=\"([^\"]+)\"',
+    blocks = re.findall(
+        r'<p class="hostName">([^<]+)</p>.*?<li[^>]*class="streamPlayBtn[^"]*".*?(<a[^>]+>)',
         html, re.S | re.I
     )
     plot = _extract_plot_from_detail(html)
     result = []
-    for hoster, s_url in streams:
-        if not s_url or s_url.startswith('javascript'):
+    for hoster, a_tag in blocks:
+        s_url = None
+        for attr in _DATA_ATTRS:
+            m = re.search(attr + r'="([^"]+)"', a_tag, re.I)
+            if m:
+                val = m.group(1).strip()
+                if val.startswith(('http', '//')) and not _is_bad_url(val):
+                    s_url = val
+                    break
+        if not s_url:
+            m = re.search(r'href="([^"]+)"', a_tag)
+            if m:
+                val = m.group(1).strip()
+                if not _is_bad_url(val) and not val.startswith('javascript'):
+                    s_url = val
+        if not s_url:
             continue
+        if s_url.startswith('//'):
+            s_url = 'https:' + s_url
         result.append((hoster.strip(), s_url, quality))
     return result, plot
 
