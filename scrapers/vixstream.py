@@ -45,7 +45,7 @@ def _vix_session():
 
 
 def _vix_get(session, path, referer=None):
-    url = _base() + path
+    url = path if path.startswith('http') else _base() + path
     try:
         r = session.get(url, headers={
             'Referer': referer or _base() + '/',
@@ -59,7 +59,7 @@ def _vix_get(session, path, referer=None):
 
 
 def _vix_api(session, path, referer):
-    url = _base() + path
+    url = path if path.startswith('http') else _base() + path
     try:
         r = session.get(url, headers={
             'Referer': referer,
@@ -198,10 +198,14 @@ def _resolve(tmdb_id, season=0, episode=0):
 
         data = _vix_api(sess, api_path, _base() + page_url)
         if not data:
+            log.log('[vixstream] _resolve: keine API-Antwort fuer %s' % api_path)
             return []
         src = data.get('src', '')
         if not src:
+            log.log('[vixstream] _resolve: kein src in API-Antwort: %s' % str(data)[:200])
             return []
+
+        log.log('[vixstream] _resolve: src=%s' % src)
 
         result = []
         for lang in ('de', 'en'):
@@ -212,18 +216,21 @@ def _resolve(tmdb_id, season=0, episode=0):
 
             embed_html = _vix_get(sess, embed_path, _base() + page_url)
             if not embed_html:
+                log.log('[vixstream] _resolve: kein embed_html fuer lang=%s path=%s' % (lang, embed_path))
                 continue
 
-            video_id_m = re.search(r'/embed/(\d+)', embed_path)
+            full_embed = embed_path if embed_path.startswith('http') else _base() + embed_path
+            video_id_m = re.search(r'/embed/([^/?&#]+)', full_embed)
             if not video_id_m:
+                log.log('[vixstream] _resolve: video_id nicht gefunden in %s' % full_embed)
                 continue
             video_id = video_id_m.group(1)
 
             token = ''
             for pat in (
-                r'["\']token["\']\s*:\s*["\']([a-f0-9]{32})["\']',
-                r'token["\']?\s*:\s*["\']([a-f0-9]{32})["\']',
-                r'const\s+token\s*=\s*["\']([a-f0-9]{32})["\']',
+                r'["\']token["\']\s*:\s*["\']([a-f0-9A-F\-]{16,})["\']',
+                r'token["\']?\s*:\s*["\']([a-f0-9A-F\-]{16,})["\']',
+                r'const\s+token\s*=\s*["\']([a-f0-9A-F\-]{16,})["\']',
             ):
                 m = re.search(pat, embed_html)
                 if m:
@@ -241,6 +248,7 @@ def _resolve(tmdb_id, season=0, episode=0):
                     break
 
             if not token or not expires:
+                log.log('[vixstream] _resolve: token=%r expires=%r – uebersprungen (lang=%s)' % (token, expires, lang))
                 continue
 
             playlist_url = '%s/playlist/%s?token=%s&expires=%s&h=1&lang=%s' % (
@@ -260,17 +268,18 @@ def _resolve(tmdb_id, season=0, episode=0):
 
 def _movies_menu():
     return [
-        {'title': 'Neu',          'url': _S_BROWSE + 'sort_by=release_date.desc',  'next_func': 'load', 'is_playable': False},
-        {'title': 'Beliebt',      'url': _S_BROWSE + 'sort_by=popularity.desc',    'next_func': 'load', 'is_playable': False},
-        {'title': 'Top bewertet', 'url': _S_BROWSE + 'sort_by=vote_average.desc&vote_count.gte=200', 'next_func': 'load', 'is_playable': False},
+        {'title': 'Beliebt',        'url': _S_BROWSE + 'sort_by=popularity.desc',                          'next_func': 'load', 'is_playable': False},
+        {'title': 'Top bewertet',   'url': _S_BROWSE + 'sort_by=vote_average.desc&vote_count.gte=200',     'next_func': 'load', 'is_playable': False},
+        {'title': 'Meistgesehen',   'url': _S_BROWSE + 'sort_by=vote_count.desc',                          'next_func': 'load', 'is_playable': False},
+        {'title': 'Jetzt im Kino',  'url': _S_BROWSE + 'sort_by=primary_release_date.desc&with_release_type=3', 'next_func': 'load', 'is_playable': False},
     ]
 
 
 def _series_menu():
     return [
-        {'title': 'Neu',          'url': _S_BROWSE + 'type=tv&sort_by=first_air_date.desc', 'next_func': 'load', 'is_playable': False},
-        {'title': 'Beliebt',      'url': _S_BROWSE + 'type=tv&sort_by=popularity.desc',     'next_func': 'load', 'is_playable': False},
-        {'title': 'Top bewertet', 'url': _S_BROWSE + 'type=tv&sort_by=vote_average.desc&vote_count.gte=200', 'next_func': 'load', 'is_playable': False},
+        {'title': 'Beliebt',        'url': _S_BROWSE + 'type=tv&sort_by=popularity.desc',                      'next_func': 'load', 'is_playable': False},
+        {'title': 'Top bewertet',   'url': _S_BROWSE + 'type=tv&sort_by=vote_average.desc&vote_count.gte=200', 'next_func': 'load', 'is_playable': False},
+        {'title': 'Meistgesehen',   'url': _S_BROWSE + 'type=tv&sort_by=vote_count.desc',                      'next_func': 'load', 'is_playable': False},
     ]
 
 
@@ -308,8 +317,9 @@ def load(url='', params=None):
 
 
 def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
-    season_i  = int(season  or 0)
-    episode_i = int(episode or 0)
+    _p        = params or {}
+    season_i  = int(season  or _p.get('season',  0) or 0)
+    episode_i = int(episode or _p.get('episode', 0) or 0)
 
     if url and '|s' in url and '|e' in url:
         tmdb_id, s_part, e_part = url.split('|')
