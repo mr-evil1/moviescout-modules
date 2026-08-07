@@ -373,17 +373,30 @@ def _resolve_dood(url):
         m_dom  = re.search(r'https?://([^/]+)', url)
         domain = m_dom.group(1) if m_dom else 'dood.to'
         url_d  = re.sub(r'/(e|f)/', '/d/', url)
-        html   = _get(url_d, 'https://%s/' % domain, ua=_UA)
-        if not html:
-            return url, False
-        token   = re.search(r'\?token=([a-zA-Z0-9]+)&expiry=', html)
-        pass_md = re.search(r'(/pass_md5/[^\s"\'&?#]+)', html)
-        if token and pass_md:
-            base = _get('https://%s%s' % (domain, pass_md.group(1)), url_d, ua=_UA).strip()
-            if base:
-                suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-                return '%s%s?token=%s&expiry=%d' % (
-                    base, suffix, token.group(1), int(time.time() * 1000)), True
+
+        with multiquest.Session() as sess:
+            sess.headers.update({'User-Agent': _UA, 'Referer': 'https://%s/' % domain})
+            r    = sess.get(url_d, timeout=15)
+            html = r.text
+            if not html:
+                return url, False
+
+            token   = re.search(r'\?token=([a-zA-Z0-9]+)&expiry=(\d+)', html)
+            pass_md = re.search(r'(/pass_md5/[^\s"\'&?#]+)', html)
+            if not (token and pass_md):
+                return url, False
+
+            base = sess.get(
+                'https://%s%s' % (domain, pass_md.group(1)),
+                headers={'Referer': url_d},
+                timeout=15,
+            ).text.strip()
+            if not base:
+                return url, False
+
+            suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+            return '%s%s?token=%s&expiry=%s' % (
+                base, suffix, token.group(1), token.group(2)), True
     except Exception:
         log.error()
     return url, False
