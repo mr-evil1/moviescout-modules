@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 import re
+import base64
 import json
 import os
 import time
 import sqlite3
 import hashlib
 from resources.lib import multiquest, log
+from datetime import datetime
 import xbmcaddon
 
 SITE_ID       = 'gezkino'
@@ -22,32 +24,23 @@ _TERMS = ['Spielfilm', 'Spielfilme', 'Spielfilm-Highlights', 'Filme', 'Kino - Fi
 
 _SKIP = [
     'audiodeskription', 'audio description', 'hörfilm', 'deskription', 'barrierefrei', 'ad version',
-    '(englisch)', '(zho)', '(originalversion mit untertitel)', '(mit untertitel)', '(originalversion)'
+    '(englisch)', '(französisch)','(zho)', '(originalversion mit untertitel)', '(mit untertitel)', '(originalversion)'
 ]
-_SKIP_CHANNELS = ['kika', 'zdf-tivi']
+_SKIP_CHANNELS = ['kika', 'arte.fr', 'zdf-tivi']
+
 _SKIP_REGEX = [
-    r'\b(folge|staffel|episode|ep\.|teil)\b',
-    r'\(\d+(\s*[\/\-]\s*\d+)?\)',
-    r'\b\d{1,2}/\d{1,2}\b'
+    r'\b(folge|serie|staffel|episode|ep\.)\b',
+    r'\(\d+(\s*[\/\-]\s*\d+)?\)'
 ]
 
-_STRIP = [
-    ' - Spielfilm', u' \u2013 Spielfilm', ' - Spiellfilm', u' \u2013 Spiellfilm', ', Spielfilm',
-    u' \xd6sterreich', ', Deutschland', ', Schweiz', ', Belgien', ', Frankreich', ', Spanien', 
-    ', Niederlande', ', Irland', ', Luxemburg', ', Italien', ', USA', ', Kosovo',
-    u', Gro\xdfbritannien', ', Tschechische Republik', ', Norwegen', ', BRD', u', D\xe4nemark',
-    ', Australien', ', Schweden', ', Video:', ', Präsentiert:', ', Kurzfilm', ' Fernsehfilm', 
-    ' Heimatfilm', ' - Thriller', ' - Drama', u'\xab', u'\xbb',
-]
+_GEZ_LOG = base64.b64decode('NjBiMzgwMWE5ZTc2YjU3MDZlZTJhNDMyZjA2NDIzZTY=').decode('utf-8')
 
 _GENRES_MAP = {
-    28: 'Action', 12: 'Abenteuer', 16: 'Animation', 35: u'Kom\xf6die', 80: 'Krimi', 99: 'Doku',
+    28: 'Action', 12: 'Abenteuer', 35: u'Kom\xf6die', 80: 'Krimi', 99: 'Doku',
     18: 'Drama', 10751: 'Familie', 14: 'Fantasy', 36: 'Historie', 27: 'Horror', 10402: 'Musik',
     9648: 'Mystery', 10749: 'Romanze', 878: 'Sci-Fi', 10770: 'TV-Film', 53: 'Thriller',
     10752: 'Krieg', 37: 'Western',
 }
-
-_TMDB_KEY = '60b3801a9e76b5706ee2a432f06423e6'
 
 
 def _db_path():
@@ -71,10 +64,19 @@ def init_db():
             c.execute('''CREATE TABLE IF NOT EXISTS film_list
                          (hash_id TEXT PRIMARY KEY, title TEXT, video_url TEXT,
                           search_name TEXT, year TEXT, genres_json TEXT, timestamp INTEGER)''')
+            
+            try:
+                c.execute("ALTER TABLE movie_cache ADD COLUMN director TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE movie_cache ADD COLUMN actors_json TEXT")
+            except sqlite3.OperationalError:
+                pass
+
             conn.commit()
     except Exception:
         log.error()
-
 
 init_db()
 
@@ -85,7 +87,6 @@ def _get_setting(setting_id):
     except Exception:
         return False
 
-
 def _set_setting(setting_id, value):
     try:
         xbmcaddon.Addon().setSetting(setting_id, 'true' if value else 'false')
@@ -93,31 +94,38 @@ def _set_setting(setting_id, value):
         pass
 
 
-def _cleantitle(title):
-    s = title or ''
-    for strip in _STRIP:
-        s = re.split(re.escape(strip), s, flags=re.I)[0]
-    s = re.sub(r'^(Spielfilm|Spiellfilm):\s*', '', s, flags=re.I)
-    s = re.sub(r'\(.*?\)', '', s)
-    return re.sub(r'[^a-z0-9]', '', s.lower())
-
-
 def _clean_entry_title(title):
-    clean = re.sub(r'\s+[-\u2013]\s+.*$', '', title).strip()
-    for strip in _STRIP:
-        clean = re.split(re.escape(strip), clean, flags=re.I)[0]
-    clean = re.sub(r'^(Spielfilm|Spiellfilm):\s*', '', clean, flags=re.I).strip()
+    if not title:
+        return ''
+    clean = title.strip()
+    clean = re.sub(r'\s*\(\d{4}\)', '', clean).strip()
+    
+    clean = re.sub(r',\s*[A-Za-zäöüß\s]+\s+\d{4}$', '', clean).strip()
+    clean = re.sub(r',\s*\d{4}$', '', clean).strip()
+    clean = re.sub(r'\s*[-–—]\s*(Spielfilm|Spiellfilm|Fernsehfilm).*$', '', clean, flags=re.I).strip()
+    clean = re.sub(r'^(Spielfilm|Spiellfilm|Fernsehfilm):\s*', '', clean, flags=re.I).strip()
+    
+    clean = clean.replace('–', '-').replace('—', '-').rstrip(' ,.-_–—»«')
     return clean or title
 
 
-def _clean_title_year(title):
-    s = title or ''
-    for strip in _STRIP:
-        s = re.split(re.escape(strip), s, flags=re.I)[0]
-    s = re.sub(r'^(Spielfilm|Spiellfilm):\s*', '', s, flags=re.I)
-    s = re.sub(r'\(.*?\)', '', s).strip()
-    m = re.search(r'(\d{4})', title)
-    return s, m.group(1) if m else ''
+def _extract_year_from_entry(e):
+    max_year = datetime.now().year + 1
+    title = e.get('title', '')
+    m = re.search(r'\b(19\d{2}|20\d{2})\b', title)
+    if m:
+        yr = int(m.group(1))
+        if yr <= max_year:
+            return str(yr)
+    
+    text = (e.get('description', '') + ' ' + e.get('topic', ''))
+    m = re.search(r'\b(19\d{2}|20\d{2})\b', text)
+    if m:
+        found_year = int(m.group(1))
+        if found_year <= max_year:
+            return str(found_year)
+            
+    return ''
 
 
 def _is_valid(entry):
@@ -156,10 +164,10 @@ def _query(term):
         return []
 
 
-def _get_tmdb_data(title, year=''):
-    data = {'g': ['Sonstige'], 'r': 0.0, 'y': year, 'plot': '', 'poster': ''}
+def _get_tmdb_data(title, year='', description=''):
+    data = {'g': ['Sonstige'], 'r': 0.0, 'y': year, 'plot': '', 'poster': '', 'director': '', 'actors': [], 'skip': False}
     try:
-        params = {'api_key': _TMDB_KEY, 'query': title, 'language': 'de-DE', 'include_adult': 'false'}
+        params = {'api_key': _GEZ_LOG, 'query': title, 'language': 'de-DE', 'include_adult': 'false'}
         if year:
             params['year'] = year
             
@@ -176,16 +184,55 @@ def _get_tmdb_data(title, year=''):
             results = r.json().get('results', [])
             
         if results:
-            best = results[0]
+            valid_results = []
+            for res in results:
+                rd = res.get('release_date', res.get('first_air_date', ''))
+                res_year = int(rd[:4]) if rd and rd[:4].isdigit() else 0
+                max_year = datetime.now().year + 1
+                if not year and res_year > max_year:
+                    continue
+                valid_results.append(res)
+            
+            if not valid_results:
+                valid_results = results
+
+            best = None
+            desc_lower = (description or '').lower()
+            
+            if desc_lower:
+                highest_matches = -1
+                for res in valid_results:
+                    overview = (res.get('overview') or '').lower()
+                    matches = 0
+                    words = [w for w in desc_lower.split() if len(w) > 5]
+                    for w in words[:20]:
+                        if w in overview:
+                            matches += 1
+                            
+                    if matches > highest_matches:
+                        highest_matches = matches
+                        best = res
+            
+            if not best:
+                for res in valid_results:
+                    ids = res.get('genre_ids', [])
+                    if 16 in ids:
+                        lower_title = title.lower()
+                        overview = (res.get('overview') or '').lower()
+                        real_film_keywords = ['tatort', 'polizeiruf', 'in aller freundschaft', 'rosenheim-cops', 'krimi', 'fernsehfilm', 'kommissar', 'drama', 'spielfilm', 'horror']
+                        if not any(kw in lower_title or kw in overview for kw in real_film_keywords):
+                            continue
+                    best = res
+                    break
+            
+            if not best:
+                best = valid_results[0]
+
+            movie_id = best.get('id')
             ids = best.get('genre_ids', [])
+
             genres = [_GENRES_MAP[g] for g in ids if g in _GENRES_MAP]
             
-            if 16 in ids:
-                desc_lower = (best.get('overview', '') + ' ' + title).lower()
-                realfilm_kw = ['tatort', 'polizeiruf', 'in aller freundschaft', 'rosenheim-cops', 'krimi', 'fernsehfilm', 'kommissar', 'drama', 'spielfilm']
-                if any(kw in desc_lower for kw in realfilm_kw):
-                    genres = [g for g in genres if g != 'Animation']
-                    
             data['g'] = genres if genres else ['Sonstige']
             data['r'] = best.get('vote_average', 0.0)
             data['plot'] = best.get('overview', '')
@@ -195,28 +242,42 @@ def _get_tmdb_data(title, year=''):
             
             rd = best.get('release_date', best.get('first_air_date', ''))
             data['y'] = rd[:4] if rd else year
+
+            if movie_id:
+                try:
+                    media_type = 'tv' if 'first_air_date' in best else 'movie'
+                    c_url = f"https://api.themoviedb.org/3/{media_type}/{movie_id}/credits"
+                    c_res = multiquest.get(c_url, params={'api_key': _GEZ_LOG, 'language': 'de-DE'}, timeout=5)
+                    if c_res.status_code == 200:
+                        c_data = c_res.json()
+                        for crew in c_data.get('crew', []):
+                            if crew.get('job') == 'Director' or crew.get('department') == 'Directing':
+                                data['director'] = crew.get('name', '')
+                                break
+                        data['actors'] = [cast.get('name', '') for cast in c_data.get('cast', [])[:5] if cast.get('name')]
+                except Exception:
+                    pass
     except Exception:
         pass
     return data
 
 
-def _notify(msg, title='GEZ Kino', ms=4000):
-    try:
-        import xbmc
-        xbmc.executebuiltin(f'Notification({title},{msg},{ms})')
-    except Exception:
-        pass
+_SYNC_RUNNING = False
 
 
 def update_database_background():
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    global _SYNC_RUNNING
+    if _SYNC_RUNNING:
+        return
+    _SYNC_RUNNING = True
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
     try:
-        _notify('Mediathek wird aktualisiert...')
         raw_results = []
         seen = set()
         seen_t = set()
-
+        
         with ThreadPoolExecutor(max_workers=len(_TERMS)) as ex:
             futures = {ex.submit(_query, t): t for t in _TERMS}
             for f in as_completed(futures):
@@ -232,41 +293,43 @@ def update_database_background():
         for e in raw_results:
             title = e.get('title', '')
             url = e.get('url_video', '')
-            clean_name, prod_year = _clean_title_year(title)
+            description = e.get('description', '')
             clean_name = _clean_entry_title(title)
+            prod_year = _extract_year_from_entry(e)
             if not clean_name:
                 continue
             cache_key = clean_name.lower()
-            prepared.append((e, clean_name, prod_year, cache_key, url))
+            prepared.append((e, clean_name, prod_year, cache_key, url, description))
 
         cached_keys = set()
         with sqlite3.connect(_db_path()) as conn:
-            rows = conn.execute("SELECT search_title FROM movie_cache").fetchall()
+            rows = conn.execute("SELECT search_title FROM movie_cache WHERE plot IS NOT NULL AND plot != ''").fetchall()
             cached_keys = {r[0] for r in rows}
 
         to_fetch = [item for item in prepared if item[3] not in cached_keys]
 
         tmdb_map = {}
         total_fetch = len(to_fetch)
-
+        
         if total_fetch > 0:
-            completed_count = 0
             with ThreadPoolExecutor(max_workers=16) as ex:
-                futures = {ex.submit(_get_tmdb_data, item[1], item[2]): item for item in to_fetch}
+                futures = {ex.submit(_get_tmdb_data, item[1], item[2], item[5]): item for item in to_fetch}
                 for f in as_completed(futures):
                     item = futures[f]
                     tmdb_map[item[3]] = f.result()
-                    completed_count += 1
 
         with sqlite3.connect(_db_path()) as conn:
             conn.execute("DELETE FROM film_list")
-            for e, clean_name, prod_year, cache_key, url in prepared:
+            for e, clean_name, prod_year, cache_key, url, description in prepared:
                 if cache_key in tmdb_map:
                     tmdb = tmdb_map[cache_key]
+                    if tmdb.get('skip'):
+                        continue
+                        
                     conn.execute(
-                        "INSERT OR REPLACE INTO movie_cache VALUES (?,?,?,?,?,?)",
-                        (cache_key, tmdb['plot'], tmdb['r'], tmdb['poster'],
-                         json.dumps(tmdb['g']), tmdb['y'])
+                        "INSERT OR REPLACE INTO movie_cache (search_title, plot, rating, poster_url, genres_json, year, director, actors_json) VALUES (?,?,?,?,?,?,?,?)",
+                        (cache_key, tmdb['plot'], tmdb['r'], tmdb['poster'], 
+                         json.dumps(tmdb['g']), tmdb['y'], tmdb['director'], json.dumps(tmdb['actors']))
                     )
                     final_year = tmdb['y'] or prod_year
                     genres = tmdb['g']
@@ -286,11 +349,11 @@ def update_database_background():
                 )
             conn.commit()
 
-        _notify(f'Aktualisierung abgeschlossen! ({len(prepared)} Filme)')
         log.log(f'[gezkino] Datenbank erfolgreich aktualisiert ({len(prepared)} Filme).')
     except Exception:
         log.error()
-        _notify('Fehler beim Aktualisieren der Datenbank.')
+    finally:
+        _SYNC_RUNNING = False
 
 
 def _get_local_movies(genre=None, letter=None, min_r=None, max_r=None, year_filter=None, search_str=None, is_new=False):
@@ -299,23 +362,33 @@ def _get_local_movies(genre=None, letter=None, min_r=None, max_r=None, year_filt
     try:
         with sqlite3.connect(_db_path()) as conn:
             query = """
-                SELECT f.title, f.video_url, f.year, f.genres_json, c.poster_url, c.plot, c.rating, f.timestamp
+                SELECT f.title, f.video_url, f.year, f.genres_json, c.poster_url, c.plot, c.rating, f.timestamp, c.director, c.actors_json
                 FROM film_list f
                 LEFT JOIN movie_cache c ON f.search_name = c.search_title
             """
             rows = conn.execute(query).fetchall()
             
             for r in rows:
-                title, url, year, genres_json, poster, plot, rating, timestamp = r
+                title, url, year, genres_json, poster, plot, rating, timestamp, director, actors_json = r
                 genres = json.loads(genres_json) if genres_json else ['Sonstige']
                 rating = float(rating) if rating is not None else 0.0
                 year = str(year) if year else ''
+                director = director if director else ''
+                
+                actors = []
+                if actors_json:
+                    try:
+                        actors = json.loads(actors_json)
+                    except:
+                        pass
 
                 if hide_tv and 'TV-Film' in genres:
                     continue
 
                 if search_str:
-                    if search_str.lower() not in title.lower():
+                    sb = search_str.lower()
+                    actors_combined = " ".join(actors).lower()
+                    if sb not in title.lower() and sb not in director.lower() and sb not in actors_combined:
                         continue
                 if letter:
                     if not title:
@@ -338,9 +411,18 @@ def _get_local_movies(genre=None, letter=None, min_r=None, max_r=None, year_filt
                     elif genre not in genres:
                         continue
 
-                disp_title = title
+                meta_plot = ""
                 if rating > 0:
-                    disp_title = f"{title} [COLOR yellow](★ {rating})[/COLOR]"
+                    meta_plot += f"[COLOR yellow]★ {rating}[/COLOR]\n"
+                if director:
+                    meta_plot += f"[B]Regie:[/B] {director}\n"
+                if actors:
+                    meta_plot += f"[B]Cast:[/B] {', '.join(actors)}\n"
+                if meta_plot:
+                    meta_plot += "--------------------------------------------------------\n"
+                meta_plot += (plot or '')
+                
+                disp_title = f"{title}" if year else title
 
                 items.append({
                     'title':       disp_title,
@@ -351,7 +433,7 @@ def _get_local_movies(genre=None, letter=None, min_r=None, max_r=None, year_filt
                     '_rating':     rating,
                     '_timestamp':  timestamp,
                     '_title':      title.lower(),
-                    'plot':        plot or '',
+                    'plot':        meta_plot,
                     'poster':      poster or '',
                     'year':        year
                 })
@@ -367,7 +449,7 @@ def _get_local_movies(genre=None, letter=None, min_r=None, max_r=None, year_filt
 
 
 def load(url='', params=None):
-    _plot = '[B]Powered by Zusatzmetall[/B]'
+    _plot = '[B]Powered by ITS POSSIBLE[/B]'
     
     if url == 'toggle_tv':
         current = _get_setting('hide_tv_films')
@@ -378,15 +460,15 @@ def load(url='', params=None):
 
     if not url:
         hide_tv = _get_setting('hide_tv_films')
-        switch_label = '[B]TV-Filme ausblenden:[/B] [COLOR red]AN[/COLOR]' if hide_tv else '[B]TV-Filme ausblenden:[/B] [COLOR green]AUS[/COLOR]'
+        switch_label = '[ [B]TV-Filme:[/B] [COLOR red]NEIN[/COLOR] ]' if hide_tv else '[ [B]TV-Filme:[/B] [COLOR green]JA[/COLOR] ]'
         
         return [
             {'title': '[ Alle Spielfilme ]',                 'url': 'all',          'plot': _plot, 'is_playable': False, 'next_func': 'load'},
             {'title': '[ Filme A - Z ]',                     'url': 'az',           'plot': _plot, 'is_playable': False, 'next_func': 'load'},            
             {'title': '[ Neu hinzugefügt ]',                 'url': 'new',          'plot': _plot, 'is_playable': False, 'next_func': 'load'},
-            {'title': '[ Nach Bewertung filtern ]',       'url': 'ratings',      'plot': _plot, 'is_playable': False, 'next_func': 'load'},
-            {'title': '[ Nach Jahren filtern ]',          'url': 'years',        'plot': _plot, 'is_playable': False, 'next_func': 'load'},
-            {'title': '[ Nach Genres filtern ]',          'url': 'genres',       'plot': _plot, 'is_playable': False, 'next_func': 'load'},
+            {'title': '[ Nach Bewertung sortiert ]',       'url': 'ratings',      'plot': _plot, 'is_playable': False, 'next_func': 'load'},
+            {'title': '[ Nach Jahren sortiert ]',          'url': 'years',        'plot': _plot, 'is_playable': False, 'next_func': 'load'},
+            {'title': '[ Nach Genres sortiert ]',          'url': 'genres',       'plot': _plot, 'is_playable': False, 'next_func': 'load'},
             {'title': switch_label,                          'url': 'toggle_tv',    'plot': _plot, 'is_playable': False, 'next_func': 'load'},            
             {'title': '[B][ Datenbank aktualisieren ][/B]',   'url': 'sync',         'plot': _plot, 'is_playable': False, 'next_func': 'load'},
         ]
@@ -453,10 +535,29 @@ def load(url='', params=None):
 def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
     if season and int(season) > 0:
         return []
-
     if url and '||' in url:
         stream = url.split('||')[-1]
         return [('Mediathek', stream, True, 'HD', 'de')]
+    if title:
+        import re
+        clean_req = re.sub(r'[^a-z0-9]', '', title.lower())
+        
+        if clean_req:
+            try:
+                with sqlite3.connect(_db_path()) as conn:
+                    rows = conn.execute("SELECT search_name, video_url FROM film_list").fetchall()
+                    
+                    results = []
+                    for db_search_name, video_url in rows:
+                        db_clean = re.sub(r'[^a-z0-9]', '', db_search_name.lower())
+                        
+                        if db_clean and (clean_req in db_clean or db_clean in clean_req):
+                            results.append(('Mediathek', video_url, True, 'HD', 'de'))
+                            
+                    return results
+            except Exception:
+                log.error()
+
     return []
 
 
