@@ -23,6 +23,7 @@ _S_NEUESTE  = '__ss_neueste__'
 _S_TREND    = '__ss_trend__'
 _S_WEEKLY   = '__ss_weekly__'
 _S_TOPRATED = '__ss_toprated__'
+_S_SEARCH   = '__ss_search__'
 
 _HOME_SECTION_URLS = {
     1: ['/gerade-im-trend', '/trending-serien'],
@@ -461,6 +462,7 @@ def get_details(url='', params=None):
 def load(url='', params=None):
     if not url:
         return [
+            {'title': 'Suche',                 'url': _S_SEARCH,                        'next_func': 'load', 'is_playable': False},
             {'title': 'Neueste Episoden',      'url': _S_NEUESTE,                       'next_func': 'load', 'is_playable': False},
             {'title': 'Gerade im Trend',       'url': _S_TREND,                         'next_func': 'load', 'is_playable': False},
             {'title': 'Wöchentliche Favoriten','url': _S_WEEKLY,                        'next_func': 'load', 'is_playable': False},
@@ -472,6 +474,15 @@ def load(url='', params=None):
             {'title': 'Sammlungen',            'url': _S_SAMML,                         'next_func': 'load', 'is_playable': False},
             {'title': 'Kalender',              'url': _S_KALENDER,                      'next_func': 'load', 'is_playable': False},
         ]
+    if url == _S_SEARCH:
+        try:
+            import xbmcgui
+            query = xbmcgui.Dialog().input('Suche', type=xbmcgui.INPUT_ALPHANUM)
+            if query:
+                return search(query)
+        except Exception:
+            log.error()
+        return []
     if url == _S_NEUESTE:          return _get_neueste_episoden()
     if url == _S_TREND:            return _get_home_show_section(1)
     if url == _S_WEEKLY:           return _get_home_show_section(2)
