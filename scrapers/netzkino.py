@@ -14,12 +14,11 @@ _GQL        = 'https://data.netzkino.de/netzkino/graphql'
 _URL_SEARCH = 'https://api.netzkino.de.simplecache.net/capi-2.0a/search?q=%s&d=www&l=de-DE'
 _URL_STREAM = 'https://pmd.netzkino-seite.netzkino.de/'
 
-_HASH_CAT     = '225e84446505b1211c3d48d08b06685d4f081e984ec35d6dddde9a57183220fea8'
-_HASH_ALL     = '2251eb32b81108d564d20969692d53311885bc80b2d1a7041ce5cba1398923caa6'
-_HASH_DETAILS = '22692ee5a44d28183d6e0bf48b40343c2d231a5d1fcce5483c81f146936f00bf97'
-_HASH_VIDEO   = '22ce2a04069f5ed18f6399df7070a2d27e209a7c530c77e4fb583ec898da02b1f1'
-_HASH_SEARCH     = '22e7f141530416887b1faa663dbdd468534c6639e47886e8156686afd9a0f81d76'
-_HASH_SEARCH_OLD = 'e7f141530416887b1faa663dbdd468534c6639e47886e8156686afd9a0f81d76'
+_HASH_CAT     = '5e84446505b1211c3d48d08b06685d4f081e984ec35d6dddde9a57183220fea8'
+_HASH_ALL     = '51eb32b81108d564d20969692d53311885bc80b2d1a7041ce5cba1398923caa6'
+_HASH_DETAILS = '692ee5a44d28183d6e0bf48b40343c2d231a5d1fcce5483c81f146936f00bf97'
+_HASH_VIDEO   = 'ce2a04069f5ed18f6399df7070a2d27e209a7c530c77e4fb583ec898da02b1f1'
+_HASH_SEARCH  = 'e7f141530416887b1faa663dbdd468534c6639e47886e8156686afd9a0f81d76'
 
 _URL_DETAILS  = 'https://www.netzkino.de/details/%s'
 
@@ -244,12 +243,12 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
             ep  = data.get('episodeData') or {}
             pmd = (ep.get('videoSource') or {}).get('pmdUrl') or ''
         else:
-            pmd = _pmd_from_page(url) or ''
+            data  = _gql('MovieDetails', _HASH_DETAILS,
+                         {'movieId': url, 'externalId': url, 'slug': url, 'potentialMovieId': url})
+            movie = data.get('movie') or {}
+            pmd   = (movie.get('videoSource') or {}).get('pmdUrl') or ''
             if not pmd:
-                data  = _gql('MovieDetails', _HASH_DETAILS,
-                             {'movieId': url, 'externalId': url, 'slug': url, 'potentialMovieId': url})
-                movie = data.get('movie') or {}
-                pmd   = (movie.get('videoSource') or {}).get('pmdUrl') or ''
+                pmd = _pmd_from_page(url) or ''
         if pmd:
             return [('Netzkino', _URL_STREAM + urllib.parse.quote(pmd, safe='/'), True, 'HD', 'de')]
         return []
@@ -259,7 +258,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
     words = query.split()
     query = words[0].lower() if words else query.lower()
     year_s = str(year or '')
-    data  = _gql('Search', _HASH_SEARCH, {'text': query}, fallback_hash=_HASH_SEARCH_OLD)
+    data  = _gql('Search', _HASH_SEARCH, {'text': query})
     nodes = (data.get('search') or {}).get('nodes') or []
     for node in nodes:
         content_id = node.get('id')
