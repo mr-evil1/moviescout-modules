@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 #mod by Zusatzmetall
 import json
+import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from resources.lib import multiquest, log
@@ -1205,7 +1206,7 @@ def get_details(url='', params=None):
     }
 
 
-def search(url='', params=None, query=''):
+def search(query='', params=None, url=''):
 
     p_dict = {}
 
@@ -1223,12 +1224,15 @@ def search(url='', params=None, query=''):
 
     if not query:
 
-        query = (
-            p_dict.get('query')
-            or p_dict.get('keyword')
-            or p_dict.get('search')
-            or ''
-        )
+        if isinstance(url, str) and url:
+            query = url
+        else:
+            query = (
+                p_dict.get('query')
+                or p_dict.get('keyword')
+                or p_dict.get('search')
+                or ''
+            )
 
     if not query:
 
