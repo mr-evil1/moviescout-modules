@@ -2,6 +2,7 @@
 # Scraper by mr-evil1
 # mod by Zusatzmetall
 # IT('s) Possible Team
+# 2026.09.19
 import json
 import re
 import urllib.parse
@@ -604,7 +605,7 @@ def _get_all_movies_cached():
     try:
         seed_slugs = set()
         for c in _MAIN_CATS:
-            slug = c[1] if isinstance(c, (list, tuple)) and len(c) > 1 else c
+            slug = c if isinstance(c, (list, tuple)) and len(c) > 1 else c
             if isinstance(slug, str) and slug != 'serien':
                 seed_slugs.add(slug)
 
@@ -667,6 +668,56 @@ def _get_all_movies_cached():
 def showAllMovies(url='', params=None):
     return _get_all_movies_cached()
 
+
+def showYears(url='', params=None):
+    all_items = _get_all_movies_cached()
+    years_map = {}
+    
+    for item in all_items:
+        if not isinstance(item, dict):
+            continue
+        y = str(item.get('year') or '').strip()
+        if y and y.isdigit():
+            val = int(y)
+            years_map[val] = years_map.get(val, 0) + 1
+
+    sorted_years = sorted(years_map.keys(), reverse=True)
+    
+    items = []
+    for y in sorted_years:
+        count = years_map[y]
+        items.append({
+            'title': f'{y}  ({count} {"Film" if count == 1 else "Filme"})',
+            'url': f'year_filter|{y}',
+            'plot': f'Alle Filme aus dem Jahr {y}',
+            'is_playable': False,
+            'next_func': 'showMoviesForYear',
+            'poster': _ICON,
+            'icon': _ICON
+        })
+    return items
+
+
+def showMoviesForYear(url='', params=None):
+    if not url or '|' not in url:
+        return []
+    
+    parts = str(url).split('|', 1)
+    target_year = parts[1].strip() if len(parts) > 1 else ''
+    all_items = _get_all_movies_cached()
+    
+    filtered = []
+    seen = set()
+    for item in all_items:
+        if str(item.get('year')) == target_year:
+            uid = str(item.get('url') or '')
+            if uid not in seen:
+                seen.add(uid)
+                filtered.append(item)
+                
+    filtered.sort(key=lambda x: str(x.get('title', '')).casefold())
+    return _enrich_items(filtered)
+    
 
 def _next_data_category_items(url):
     next_data = _fetch_next_data(url)
@@ -753,6 +804,15 @@ def load(url='', params=None):
             'icon': _ICON
         },
         {
+            'title': 'Nach Produktionsjahr',
+            'url': 'years_overview',
+            'plot': 'Filme chronologisch nach Produktionsjahr durchsuchen (neueste zuerst).',
+            'is_playable': False,
+            'next_func': 'showYears',
+            'poster': _ICON,
+            'icon': _ICON
+        },
+        {
             'title': 'Serien',
             'url': 'serien',
             'plot': 'Übersicht aller verfügbaren Serien auf Netzkino.',
@@ -773,7 +833,7 @@ def load(url='', params=None):
         {
             'title': 'Cache leeren',
             'url': '',
-            'plot': 'Löscht den lokalen Cache fur Kategorien und Filmdetails.',
+            'plot': 'Löscht den lokalen Cache für Kategorien und Filmdetails.',
             'is_playable': False,
             'next_func': 'clear_cache',
             'poster': _ICON,
@@ -788,10 +848,10 @@ def _parse_url_offset(url):
         parts = url.rsplit('|', 1)
         try:
             return parts[0], int(parts[1])
-        except ValueError:
+        except (ValueError, IndexError):
             return url, 0
     return url, 0
-
+    
 
 def showEntries(url='', params=None):
     if not url:
@@ -889,7 +949,7 @@ def showEpisodes(url='', params=None):
     if not url or '|' not in url:
         return []
     parts = str(url).split('|')
-    season_id = parts[0]
+    season_id = parts[0] if len(parts) > 0 else ''
     ep_id = parts[1] if len(parts) > 1 else ''
     try:
         season_num = int(parts[2]) if len(parts) > 2 else 1
