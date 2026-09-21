@@ -2,7 +2,7 @@
 # Scraper by mr-evil1
 # mod by Zusatzmetall
 # IT('s) Possible Team
-# 2026.09.19
+# 2026.09.21
 import json
 import re
 import urllib.parse
@@ -126,6 +126,17 @@ _MAIN_CATS = [
 def log_error(msg=""):
     import traceback
     xbmc.log(f"[Netzkino] ERROR: {msg}\n{traceback.format_exc()}", xbmc.LOGERROR)
+
+def _encode_stream_url(pmd_str):
+    if pmd_str.startswith('http'):
+        parsed = urllib.parse.urlsplit(pmd_str)
+        clean_path = urllib.parse.unquote(parsed.path)
+        once = urllib.parse.quote(clean_path, safe='/')
+        double = urllib.parse.quote(once, safe='/:@!$&()*+,;=')
+        return urllib.parse.urlunsplit(parsed._replace(path=double))
+    clean = urllib.parse.unquote(pmd_str)
+    once = urllib.parse.quote(clean, safe='/')
+    return _URL_STREAM + urllib.parse.quote(once, safe='/:@!$&()*+,;=')
 
 def _clean_html(raw_text):
     if not raw_text:
@@ -1071,8 +1082,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
 
         if pmd:
             pmd_str = str(pmd)
-            stream_url = pmd_str if pmd_str.startswith('http') else (_URL_STREAM + urllib.parse.quote(pmd_str, safe='/'))
-            return [('Netzkino', stream_url, True, 'HD', 'de')]
+            return [('Netzkino', _encode_stream_url(pmd_str), True, 'HD', 'de')]
 
         return []
 
@@ -1111,8 +1121,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
             continue
             
         pmd_str = str(pmd)
-        stream_url = pmd_str if pmd_str.startswith('http') else (_URL_STREAM + urllib.parse.quote(pmd_str, safe='/'))
-        return [('Netzkino', stream_url, True, 'HD', 'de')]
+        return [('Netzkino', _encode_stream_url(pmd_str), True, 'HD', 'de')]
 
     return []
 
