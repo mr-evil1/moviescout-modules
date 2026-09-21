@@ -3,6 +3,7 @@ import hmac as _hmac
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 import uuid
@@ -28,14 +29,19 @@ _CLIENT_RELEASE = '6.50.3'
 _RTL_WEB        = 'https://plus.rtl.de'
 _LAYOUT_BASE    = 'https://layout.rtlde.bedrock.tech/front/v1/rtlde/m6group_web/main/token-web-31'
 _FRONT_AUTH_URL = 'https://front-auth.rtlde.bedrock.tech/v2/rtlde/platforms/m6group_web/token'
-_ANON_OIDC_URL  = 'https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect/token'
+_DRM_UPFRONT_BASE = 'https://drm.rtlde.bedrock.tech/v1/customers/rtlde/platforms/m6group_web'
+_ANON_OIDC_URL      = 'https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect/token'
 _ANON_CLIENT_ID     = 'anonymous-user'
 _ANON_CLIENT_SECRET = '4bfeb73f-1c4a-4e9f-a7fa-96aa1ad3d94c'
 _IMAGE_BASE     = 'https://images-fio.rtlde.bedrock.tech'
 _IMAGE_KEY      = 'x9vGg4RNeNBqV2nBfhqLV6cN4n'
 _AUTH_TOKEN_STATIC = 'c0b0575f16b596d7d24b05987bbca51453f6afb0'
 _FREE_FOLDER_ID = '193'
-_PLUGIN_RTL     = 'plugin://plugin.video.rtlplus/'
+_API_BASE       = 'https://api.rtlde.bedrock.tech'
+_DRM_LICENSE_URL = 'https://lic.drmtoday.com/license-proxy-widevine/cenc/'
+_DRM_SERVICE_VOD  = 'video_tv'
+_DRM_SERVICE_LIVE = 'rtlplus_root'
+_STREAM_PARAMS  = {'audio': 'aac', 'resolution': 'max', 'url_type': 'standard', 'video': 'h264'}
 _PAGE_SIZE      = 50
 _LAYOUT_PAGES   = 2
 _BLOCK_PAGES    = 3
@@ -141,8 +147,10 @@ def _guest_headers(oidc, ts, auth_tok):
     return {
         'Authorization':                    'Bearer %s' % oidc,
         'x-auth-device-name':               'Android - Samsung Internet',
+        'x-auth-gigya-uid':                 '',
         'x-auth-token-timestamp':           str(ts),
         'x-auth-token':                     auth_tok,
+        'x-auth-profile-id':                '',
         'x-auth-device-id':                 _get_device_id(),
         'x-auth-device-player-size-width':  '384',
         'x-auth-device-player-size-height': '682',
@@ -811,20 +819,214 @@ def get_live(url='', params=None):
     return channels
 
 
+def _q(value):
+    return urllib.parse.quote(str(value).encode('utf8'))
+
+
+def _anon_drm_token(service_code, content_type, content_id, uid=None, uid_type='deviceid'):
+    oidc, bedrock = _get_tokens()
+    if not oidc:
+        xbmc.log('[RTL+Free] kein OIDC-Token – DRM nicht moeglich', xbmc.LOGWARNING)
+        return ''
+    if not bedrock:
+        xbmc.log('[RTL+Free] kein Bedrock-Token – DRM nicht moeglich', xbmc.LOGWARNING)
+        return ''
+    if not uid:
+        uid = _get_device_id()
+    if uid.startswith(uid_type + '-'):
+        uid_path = uid
+    else:
+        uid_path = '%s-%s' % (uid_type, uid)
+    segment = 'live' if content_type == 'live' else 'videos'
+    url = '%s/services/%s/users/%s/%s/%s/upfront-token' % (
+        _DRM_UPFRONT_BASE, service_code, uid_path, segment, content_id)
+    headers = {
+        'Authorization':   'Bearer %s' % oidc,
+        'x-bedrock-token': bedrock,
+        'User-Agent':      _UA,
+        'Origin':          _RTL_WEB,
+        'Referer':         _RTL_WEB + '/',
+        'x-client-release': _CLIENT_RELEASE,
+        'x-customer-name': 'rtlde',
+        'Accept':          '*/*',
+    }
+    body, status = _http_get(url, headers, timeout=8)
+    if body and status < 400:
+        try:
+            tok = json.loads(body).get('token', '')
+            if tok:
+                return tok
+        except Exception as e:
+            log_error(str(e))
+    _log_http('drm-upfront service=%s cid=%s' % (service_code, content_id), status, body)
+    return ''
+
+
+def _extract_assets_from_layout(layout):
+    assets = []
+    if not isinstance(layout, dict):
+        return assets
+    for block in layout.get('blocks', []):
+        for item in (block.get('content') or {}).get('items', []):
+            video = (item.get('itemContent') or {}).get('video') or {}
+            for a in video.get('assets', []):
+                fmt  = a.get('format', '')
+                path = a.get('path', '') or a.get('reference', '')
+                if fmt in ('dashcenc', 'dash') and path:
+                    drm_cfg = (a.get('drm') or {}).get('config') or {}
+                    assets.append({
+                        'path':          path,
+                        'format':        fmt,
+                        'quality':       a.get('quality', 'sd'),
+                        'video_quality': a.get('video_quality', ''),
+                        'drm_config':    drm_cfg,
+                        'drm_type':      (a.get('drm') or {}).get('type', 'software'),
+                    })
+    return assets
+
+
+def _score_asset(a):
+    q = (a.get('video_quality') or a.get('quality') or 'sd').lower()
+    qi = {'fhd': 0, '1080p': 0, 'hd2': 0, 'hd': 1, 'hd720': 1, '720p': 1,
+          'sd': 2, '576p': 2, '360p': 3, '360': 3}.get(q, 1)
+    return -qi
+
+
+def _get_video_layout(clip_id):
+    oidc, bedrock = _get_tokens()
+    url  = '%s/video/%s/layout' % (_LAYOUT_BASE, clip_id)
+    xloc = '%s/video/%s' % (_RTL_WEB, clip_id)
+    body, status = _http_get(
+        url,
+        _api_headers(oidc, bedrock, xloc),
+        params={'blockPage': 1, 'nbPages': 2}
+    )
+    if not body or status >= 400:
+        _log_http('video-layout clip=%s' % clip_id, status, body)
+        return None
+    try:
+        return json.loads(body)
+    except Exception as e:
+        log_error(str(e))
+    return None
+
+
+def _get_live_layout(channel_slug):
+    oidc, bedrock = _get_tokens()
+    if channel_slug.startswith('fast'):
+        xloc = '%s/%s/live' % (_RTL_WEB, channel_slug)
+    else:
+        xloc = '%s/live/%s' % (_RTL_WEB, channel_slug)
+    url = '%s/live/%s/layout' % (_LAYOUT_BASE, channel_slug)
+    body, status = _http_get(
+        url,
+        _api_headers(oidc, bedrock, xloc),
+        params={'blockPage': 1, 'nbPages': 2}
+    )
+    if not body or status >= 400:
+        _log_http('live-layout channel=%s' % channel_slug, status, body)
+        return None
+    try:
+        return json.loads(body)
+    except Exception as e:
+        log_error(str(e))
+    return None
+
+
+def _build_listitem(title, mpd_url, drm_token, is_live=False):
+    stream_headers = (
+        'User-Agent=%s'   % _q(_UA)
+        + '&Origin=%s'    % _q(_RTL_WEB)
+        + '&Referer=%s'   % _q(_RTL_WEB + '/')
+    )
+    li = xbmcgui.ListItem(label=title, path=mpd_url)
+    li.setInfo('video', {'title': title, 'mediatype': 'video'})
+    li.setProperty('inputstream',                        'inputstream.adaptive')
+    li.setProperty('inputstream.adaptive.manifest_type', 'mpd')
+    li.setProperty('inputstream.adaptive.stream_headers',   stream_headers)
+    li.setProperty('inputstream.adaptive.manifest_headers', stream_headers)
+    if is_live:
+        li.setProperty('inputstream.adaptive.play_timeshift_buffer', 'true')
+    if drm_token:
+        lic_headers = (
+            'Content-Type=application%2Foctet-stream'
+            + '&User-Agent=%s'      % _q(_UA)
+            + '&Origin=%s'          % _q(_RTL_WEB)
+            + '&Referer=%s'         % _q(_RTL_WEB + '/')
+            + '&x-dt-auth-token=%s' % _q(drm_token)
+        )
+        li.setProperty('inputstream.adaptive.license_type', 'com.widevine.alpha')
+        li.setProperty('inputstream.adaptive.license_key',
+                       '%s|%s|R{SSM}|JBlicense' % (_DRM_LICENSE_URL, lic_headers))
+    return li
+
+
+def _play_via_player(title, mpd_url, drm_token, is_live=False):
+    li = _build_listitem(title, mpd_url, drm_token, is_live)
+    xbmc.Player().play(mpd_url, li)
+
+
+def _resolve_and_play_vod(clip_id, title='Video'):
+    layout = _get_video_layout(clip_id)
+    assets = _extract_assets_from_layout(layout)
+    if not assets:
+        xbmc.log('[RTL+Free] Keine Assets für clip=%s' % clip_id, xbmc.LOGWARNING)
+        return False
+    asset   = max(assets, key=_score_asset)
+    mpd_url = asset['path']
+    drm_cfg  = asset.get('drm_config') or {}
+    svc      = drm_cfg.get('serviceCode', _DRM_SERVICE_VOD)
+    cid      = drm_cfg.get('contentId', clip_id)
+    uid      = drm_cfg.get('uid', _get_device_id())
+    uid_type = drm_cfg.get('uidType', 'deviceid')
+    drm_tok  = _anon_drm_token(svc, 'video', cid, uid=uid, uid_type=uid_type) if drm_cfg else ''
+    _play_via_player(title, mpd_url, drm_tok)
+    return True
+
+
+def _resolve_and_play_live(channel_slug, title='Live'):
+    layout = _get_live_layout(channel_slug)
+    assets = _extract_assets_from_layout(layout)
+    if assets:
+        asset   = max(assets, key=_score_asset)
+        mpd_url = asset['path']
+        drm_cfg  = asset.get('drm_config') or {}
+        svc      = drm_cfg.get('serviceCode', _DRM_SERVICE_LIVE)
+        cid      = drm_cfg.get('contentId', 'dashcenc_rtlde_%s' % channel_slug)
+        uid      = drm_cfg.get('uid', _get_device_id())
+        uid_type = drm_cfg.get('uidType', 'deviceid')
+        drm_tok  = _anon_drm_token(svc, 'live', cid, uid=uid, uid_type=uid_type) if drm_cfg else ''
+    else:
+        slug_dash = channel_slug.replace('_', '-')
+        if channel_slug.startswith('fast'):
+            mpd_url = ('https://origin.live.rtlde.bedrock.tech/out/v1/rtlde/'
+                       'rtlde-%s/cmaf_cenc00/dash-short-sd.mpd' % slug_dash)
+        else:
+            mpd_url = ('https://origin.live.rtlde.bedrock.tech/out/v1/rtlde/'
+                       'rtlde-%s/cmaf_cenc71/dash-short-hd720.mpd' % slug_dash)
+        cid     = 'dashcenc_rtlde_%s' % channel_slug
+        drm_tok = _anon_drm_token(_DRM_SERVICE_LIVE, 'live', cid)
+    _play_via_player(title, mpd_url, drm_tok, is_live=True)
+    return True
+
+
 def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
     if url:
         u = str(url)
+
         if u.startswith('live:'):
             channel_id = u[5:]
             if channel_id:
-                purl = _PLUGIN_RTL + '?mode=play_live&channel_id=' + urllib.parse.quote_plus(channel_id)
-                return [('RTL+ Live', purl, True, 'HD', 'de')]
-        elif u.startswith('video:'):
+                _resolve_and_play_live(channel_id, title or 'Live')
+            return []
+
+        if u.startswith('video:'):
             clip_id = u[6:]
             if clip_id:
-                purl = _PLUGIN_RTL + '?mode=play_vod&video_id=' + urllib.parse.quote_plus(clip_id)
-                return [('RTL+ Free', purl, True, 'HD', 'de')]
-        elif u.startswith('program:'):
+                _resolve_and_play_vod(clip_id, title or 'Video')
+            return []
+
+        if u.startswith('program:'):
             rest       = u[8:]
             program_id = rest.split(':')[0]
             seo_part   = rest.split(':')[1] if ':' in rest else ''
@@ -832,13 +1034,15 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
                 seo_part = seo_part.split(':')[0]
             clip_id = _clip_from_program(program_id, seo_part)
             if clip_id:
-                purl = _PLUGIN_RTL + '?mode=play_vod&video_id=' + urllib.parse.quote_plus(clip_id)
-                return [('RTL+ Free', purl, True, 'HD', 'de')]
-        elif u.startswith('player:'):
+                _resolve_and_play_vod(clip_id, title or 'Video')
+            return []
+
+        if u.startswith('player:'):
             vp_id = u[7:]
             if vp_id:
-                purl = _PLUGIN_RTL + '?mode=play_vod&video_id=' + urllib.parse.quote_plus(vp_id)
-                return [('RTL+ Free', purl, True, 'HD', 'de')]
+                _resolve_and_play_vod(vp_id, title or 'Video')
+            return []
+
         return []
 
     query = re.sub(r'\s*[\(\[\{].*', '', str(title or '')).strip()
@@ -857,16 +1061,16 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
         r_url = r.get('url', '')
         if r_url.startswith('video:'):
             clip_id = r_url[6:]
-            purl = _PLUGIN_RTL + '?mode=play_vod&video_id=' + urllib.parse.quote_plus(clip_id)
-            return [('RTL+ Free', purl, True, 'HD', 'de')]
+            if _resolve_and_play_vod(clip_id, title or 'Video'):
+                return []
         elif r_url.startswith('program:'):
             rest       = r_url[8:]
             program_id = rest.split(':')[0]
             seo_part   = rest.split(':')[1] if ':' in rest else ''
             clip_id    = _clip_from_program(program_id, seo_part)
             if clip_id:
-                purl = _PLUGIN_RTL + '?mode=play_vod&video_id=' + urllib.parse.quote_plus(clip_id)
-                return [('RTL+ Free', purl, True, 'HD', 'de')]
+                if _resolve_and_play_vod(clip_id, title or 'Video'):
+                    return []
     return []
 
 
