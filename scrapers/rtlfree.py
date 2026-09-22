@@ -961,9 +961,14 @@ def _build_listitem(title, mpd_url, drm_token, is_live=False):
     return li
 
 
+class _StreamPlayed(Exception):
+    pass
+
+
 def _play_via_player(title, mpd_url, drm_token, is_live=False):
     li = _build_listitem(title, mpd_url, drm_token, is_live)
     xbmc.Player().play(mpd_url, li)
+    raise _StreamPlayed()
 
 
 def _resolve_and_play_vod(clip_id, title='Video'):
@@ -972,8 +977,8 @@ def _resolve_and_play_vod(clip_id, title='Video'):
     if not assets:
         xbmc.log('[RTL+Free] Keine Assets für clip=%s' % clip_id, xbmc.LOGWARNING)
         return False
-    asset   = max(assets, key=_score_asset)
-    mpd_url = asset['path']
+    asset    = max(assets, key=_score_asset)
+    mpd_url  = asset['path']
     drm_cfg  = asset.get('drm_config') or {}
     svc      = drm_cfg.get('serviceCode', _DRM_SERVICE_VOD)
     cid      = drm_cfg.get('contentId', clip_id)
@@ -988,8 +993,8 @@ def _resolve_and_play_live(channel_slug, title='Live'):
     layout = _get_live_layout(channel_slug)
     assets = _extract_assets_from_layout(layout)
     if assets:
-        asset   = max(assets, key=_score_asset)
-        mpd_url = asset['path']
+        asset    = max(assets, key=_score_asset)
+        mpd_url  = asset['path']
         drm_cfg  = asset.get('drm_config') or {}
         svc      = drm_cfg.get('serviceCode', _DRM_SERVICE_LIVE)
         cid      = drm_cfg.get('contentId', 'dashcenc_rtlde_%s' % channel_slug)
