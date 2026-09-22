@@ -263,14 +263,21 @@ def _build_movie(m):
     vid  = (m.get('video') or {}).get('id', '')
     path = m.get('path', '')
     url  = ('vod:%s' % vid) if vid else ('movie:%s' % path)
+    poster = (_img(m, 'heroPortrait', 'nextgen-webphone-heroportrait-563x')
+              or _img(m, 'heroPortraitImage', 'nextgen-webphone-heroportrait-563x')
+              or _img(m, 'posterImage', 'nextgen-webphone-heroportrait-563x'))
+    icon   = (_img(m, 'primaryImage')
+              or _img(m, 'posterImage'))
+    fanart = (_img(m, 'heroLandscapeImage', 'nextgen-web-herolandscape-1920x')
+              or poster)
     return {
         'title':       m.get('title', ''),
         'url':         url,
         'plot':        m.get('description', ''),
         'year':        str(m.get('productionYear', '') or ''),
-        'poster':      _img(m, 'heroPortraitImage', 'nextgen-webphone-heroportrait-563x'),
-        'icon':        _img(m, 'primaryImage'),
-        'fanart':      _img(m, 'heroLandscapeImage', 'nextgen-web-herolandscape-1920x'),
+        'poster':      poster,
+        'icon':        icon,
+        'fanart':      fanart,
         'mediatype':   'movie',
         'is_playable': True,
         'next_func':   'get_hosters',
@@ -278,13 +285,19 @@ def _build_movie(m):
 
 
 def _build_series(s):
+    poster = (_img(s, 'heroPortraitImage', 'nextgen-webphone-heroportrait-563x')
+              or _img(s, 'posterImage', 'nextgen-webphone-heroportrait-563x'))
+    icon   = (_img(s, 'primaryImage')
+              or _img(s, 'posterImage'))
+    fanart = (_img(s, 'heroLandscapeImage', 'nextgen-web-herolandscape-1920x')
+              or poster)
     return {
         'title':       s.get('title', ''),
         'url':         'series:%s' % s.get('path', ''),
         'plot':        s.get('description', ''),
-        'poster':      _img(s, 'heroPortraitImage', 'nextgen-webphone-heroportrait-563x'),
-        'icon':        _img(s, 'primaryImage'),
-        'fanart':      _img(s, 'heroLandscapeImage', 'nextgen-web-herolandscape-1920x'),
+        'poster':      poster,
+        'icon':        icon,
+        'fanart':      fanart,
         'mediatype':   'tvshow',
         'is_playable': False,
         'next_func':   'showSeasons',
@@ -316,10 +329,20 @@ def _build_episode(ep, series_title=''):
 def _build_channel(brand):
     path  = brand.get('path', '')
     title = brand.get('title', '')
-    icon  = _img(brand, 'logoImage', 'nextgen-web-artlogo-183x75')
-    if not icon:
-        icon = _img(brand, 'primaryImage')
-    return _folder(title, 'channel:%s' % path, 'Joyn Sender: %s' % title)
+    icon  = (_img(brand, 'logo', 'nextgen-web-artlogo-183x75')
+             or _img(brand, 'logoImage', 'nextgen-web-artlogo-183x75')
+             or _img(brand, 'primaryImage'))
+    fanart = _img(brand, 'heroLandscapeImage', 'nextgen-web-herolandscape-1920x') or icon
+    return {
+        'title':       title,
+        'url':         'channel:%s' % path,
+        'plot':        'Joyn Sender: %s' % title,
+        'poster':      icon,
+        'icon':        icon,
+        'fanart':      fanart,
+        'is_playable': False,
+        'next_func':   'showEntries',
+    }
 
 
 def _build_live(ls):
@@ -833,12 +856,127 @@ def _get_mpd(video_id, stream_type, ent_tok):
         return '', '', ''
 
 
+def _scout_find_url(title, year, imdb, tmdb_id, season, episode):
+    is_episode = int(season) > 0 and int(episode) > 0
+    log.log('[Joyn] _scout_find_url title=%s year=%s season=%s episode=%s' % (title, year, season, episode))
+    data = _gql('SearchQ',
+                {'text': title, 'first': _GQL_FIRST, 'offset': 0},
+                'SEARCH', {'enable_user_location': 'true'})
+    if not isinstance(data, dict):
+        return ''
+    search_root = None
+    for v in data.values():
+        if isinstance(v, dict):
+            search_root = v
+            break
+    if not search_root:
+        return ''
+    result_list = []
+    for v in search_root.values():
+        if isinstance(v, list):
+            result_list.extend(v)
+        elif isinstance(v, dict):
+            result_list.extend(v.get('items') or [])
+    if not is_episode:
+        for it in result_list:
+            if not isinstance(it, dict):
+                continue
+            asset = it.get('asset') or it
+            if asset.get('__typename') != 'Movie' or not _is_free(asset):
+                continue
+            if year and asset.get('productionYear') and str(asset.get('productionYear')) != str(year):
+                continue
+            vid = (asset.get('video') or {}).get('id', '')
+            if vid:
+                return 'vod:%s' % vid
+            path = asset.get('path', '')
+            if path:
+                return 'movie:%s' % path
+        for it in result_list:
+            if not isinstance(it, dict):
+                continue
+            asset = it.get('asset') or it
+            if asset.get('__typename') != 'Movie' or not _is_free(asset):
+                continue
+            vid = (asset.get('video') or {}).get('id', '')
+            if vid:
+                return 'vod:%s' % vid
+            path = asset.get('path', '')
+            if path:
+                return 'movie:%s' % path
+    else:
+        season  = int(season)
+        episode = int(episode)
+        for it in result_list:
+            if not isinstance(it, dict):
+                continue
+            asset = it.get('asset') or it
+            if asset.get('__typename') != 'Series' or not _is_free(asset):
+                continue
+            path = asset.get('path', '')
+            if not path:
+                continue
+            data2 = _gql('SeriesDetailNewPageStatic',
+                         {'path': path, 'licenseFilter': 'ALL'},
+                         'SEASONS', {'enable_user_location': 'true'})
+            if not isinstance(data2, dict):
+                continue
+            series_node = None
+            for v in data2.values():
+                if isinstance(v, dict):
+                    if v.get('__typename') == 'Series':
+                        series_node = v
+                        break
+                    for vv in v.values():
+                        if isinstance(vv, dict) and vv.get('__typename') == 'Series':
+                            series_node = vv
+                            break
+            if not series_node:
+                continue
+            all_seasons = series_node.get('allSeasons') or series_node.get('seasons') or []
+            target_season = None
+            for s in all_seasons:
+                if isinstance(s, dict) and s.get('number') == season:
+                    target_season = s
+                    break
+            if not target_season:
+                continue
+            sid = target_season.get('id', '')
+            if not sid:
+                continue
+            offset2 = 0
+            first2  = 32
+            while True:
+                data3 = _gql('Season',
+                             {'id': sid, 'licenseFilter': 'ALL',
+                              'first': first2, 'offset': offset2},
+                             'EPISODES', {'enable_user_location': 'true'})
+                eps = ((data3 or {}).get('season') or {}).get('episodes') or []
+                if not eps:
+                    break
+                for ep in eps:
+                    if not isinstance(ep, dict):
+                        continue
+                    if ep.get('number') == episode and _is_free(ep):
+                        vid = (ep.get('video') or {}).get('id', '')
+                        if vid:
+                            return 'vod:%s' % vid
+                if len(eps) < first2:
+                    break
+                offset2 += first2
+    log.log('[Joyn] _scout_find_url: kein Treffer', log.LOGWARNING)
+    return ''
+
+
 def get_hosters(title='', year='', season=0, episode=0,
                 imdb='', tmdb='', url='', params=None):
     log.log('[Joyn] get_hosters url=%s title=%s' % (url, title))
     if not url:
-        log.log('[Joyn] get_hosters: url leer!', log.LOGWARNING)
-        return []
+        if title:
+            url = _scout_find_url(title, year, imdb, tmdb, season, episode)
+        if not url:
+            log.log('[Joyn] get_hosters: url leer und Scout-Suche erfolglos!', log.LOGWARNING)
+            return []
 
     if url.startswith('movie:'):
         path = url[6:]
@@ -953,10 +1091,21 @@ def search(query='', params=None, url=''):
         tn    = asset.get('__typename', '')
 
         if tn == 'Movie' and _is_free(asset):
-            vid = (asset.get('video') or {}).get('id', '')
-            key = vid or asset.get('path', '')
+            vid  = (asset.get('video') or {}).get('id', '')
+            path = asset.get('path', '')
+            key  = vid or path
             if key and key not in seen:
                 seen.add(key)
+                if path and (not asset.get('productionYear') or not asset.get('heroPortraitImage')):
+                    d2 = _gql('PageMovieDetailStatic', {'path': path}, 'MOVIES',
+                              {'enable_user_location': 'true'})
+                    if isinstance(d2, dict):
+                        for v2 in d2.values():
+                            if isinstance(v2, dict):
+                                mov = v2.get('movie') or v2
+                                if isinstance(mov, dict) and mov.get('__typename') == 'Movie':
+                                    asset = mov
+                                    break
                 items.append(_build_movie(asset))
 
         elif tn == 'Series' and _is_free(asset):
