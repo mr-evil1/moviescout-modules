@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_update": "2026-09-22T10:21:21Z",
+  "last_update": "2026-09-22T12:54:36Z",
   "scrapers": [
     {
       "name": "animetoast",
@@ -77,6 +77,13 @@
       "version": "1.0",
       "domain": "",
       "description": "Internetarchive Scraper",
+      "last_modified": "2026-09-22"
+    },
+    {
+      "name": "joynfree",
+      "version": "1.0",
+      "domain": "",
+      "description": "Joynfree Scraper",
       "last_modified": "2026-09-22"
     },
     {
