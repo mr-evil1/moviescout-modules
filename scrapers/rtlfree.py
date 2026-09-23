@@ -10,7 +10,7 @@ import uuid
 import xbmc
 import xbmcaddon
 import xbmcgui
-from resources.lib import multiquest
+from resources.lib import multiquest, log
 
 SITE_ID       = 'rtlfree'
 SITE_NAME     = 'RTL+ Free'
@@ -50,13 +50,12 @@ _LIVE_TYPES     = ('live', 'livetv', 'channel', 'event', 'live_event', 'event_st
 
 
 def log_error(msg=''):
-    import traceback
-    xbmc.log('[RTL+Free] ERROR: %s\n%s' % (msg, traceback.format_exc()), xbmc.LOGERROR)
+    log.error()
 
 
 def _log_http(tag, status, body):
     snippet = str(body or '')[:300].replace('\n', ' ')
-    xbmc.log('[RTL+Free] %s HTTP %d: %s' % (tag, status, snippet), xbmc.LOGWARNING)
+    log.log('[RTL+Free] %s HTTP %d: %s' % (tag, status, snippet), log.LOGWARNING)
 
 
 def _clean_html(raw):
@@ -73,7 +72,7 @@ def _exc_result(exc):
     except Exception:
         pass
     if not code:
-        xbmc.log('[RTL+Free] %s: %s' % (type(exc).__name__, exc), xbmc.LOGWARNING)
+        log.log('[RTL+Free] %s: %s' % (type(exc).__name__, exc), log.LOGWARNING)
     return body, code
 
 
@@ -238,7 +237,7 @@ def _page_steps(params):
 def _api_get(path, params=None, x_location=None):
     oidc, bedrock = _get_tokens()
     if not bedrock:
-        xbmc.log('[RTL+Free] kein Bedrock-Token erhalten', xbmc.LOGWARNING)
+        log.log('[RTL+Free] kein Bedrock-Token erhalten', log.LOGWARNING)
     url = _LAYOUT_BASE + path
     query = dict(params or {})
     attempts = [(nb, x_location) for nb in _page_steps(query)]
@@ -826,10 +825,10 @@ def _q(value):
 def _anon_drm_token(service_code, content_type, content_id, uid=None, uid_type='deviceid'):
     oidc, bedrock = _get_tokens()
     if not oidc:
-        xbmc.log('[RTL+Free] kein OIDC-Token – DRM nicht moeglich', xbmc.LOGWARNING)
+        log.log('[RTL+Free] kein OIDC-Token – DRM nicht moeglich', log.LOGWARNING)
         return ''
     if not bedrock:
-        xbmc.log('[RTL+Free] kein Bedrock-Token – DRM nicht moeglich', xbmc.LOGWARNING)
+        log.log('[RTL+Free] kein Bedrock-Token – DRM nicht moeglich', log.LOGWARNING)
         return ''
     if not uid:
         uid = _get_device_id()
@@ -965,6 +964,41 @@ class _StreamPlayed(Exception):
     pass
 
 
+def _resolve_vod_to_hoster(clip_id):
+    layout = _get_video_layout(clip_id)
+    assets = _extract_assets_from_layout(layout)
+    if not assets:
+        log.log('[RTL+Free] _resolve_vod_to_hoster: keine Assets für clip=%s' % clip_id, log.LOGWARNING)
+        return []
+    asset   = max(assets, key=_score_asset)
+    mpd_url = asset['path']
+    drm_cfg = asset.get('drm_config') or {}
+    if drm_cfg:
+        svc      = drm_cfg.get('serviceCode', _DRM_SERVICE_VOD)
+        cid      = drm_cfg.get('contentId', clip_id)
+        uid      = drm_cfg.get('uid', _get_device_id())
+        uid_type = drm_cfg.get('uidType', 'deviceid')
+        drm_tok  = _anon_drm_token(svc, 'video', cid, uid=uid, uid_type=uid_type)
+    else:
+        drm_tok = ''
+    drm_info = {}
+    if drm_tok:
+        lic_headers = (
+            'Content-Type=application%2Foctet-stream'
+            + '&User-Agent=%s'      % _q(_UA)
+            + '&Origin=%s'          % _q(_RTL_WEB)
+            + '&Referer=%s'         % _q(_RTL_WEB + '/')
+            + '&x-dt-auth-token=%s' % _q(drm_tok)
+        )
+        drm_info = {
+            'drm_type':    'widevine',
+            'drm_license': _DRM_LICENSE_URL,
+            'drm_token':   drm_tok,
+            'license_key': '%s|%s|R{SSM}|JBlicense' % (_DRM_LICENSE_URL, lic_headers),
+        }
+    return [['RTL+Free', mpd_url, drm_info]]
+
+
 def _play_via_player(title, mpd_url, drm_token, is_live=False):
     li = _build_listitem(title, mpd_url, drm_token, is_live)
     xbmc.Player().play(mpd_url, li)
@@ -975,7 +1009,7 @@ def _resolve_and_play_vod(clip_id, title='Video'):
     layout = _get_video_layout(clip_id)
     assets = _extract_assets_from_layout(layout)
     if not assets:
-        xbmc.log('[RTL+Free] Keine Assets für clip=%s' % clip_id, xbmc.LOGWARNING)
+        log.log('[RTL+Free] Keine Assets für clip=%s' % clip_id, log.LOGWARNING)
         return False
     asset    = max(assets, key=_score_asset)
     mpd_url  = asset['path']
@@ -1021,15 +1055,53 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
 
         if u.startswith('live:'):
             channel_id = u[5:]
-            if channel_id:
-                _resolve_and_play_live(channel_id, title or 'Live')
-            return []
+            if not channel_id:
+                return []
+            layout  = _get_live_layout(channel_id)
+            assets  = _extract_assets_from_layout(layout)
+            if assets:
+                asset    = max(assets, key=_score_asset)
+                mpd_url  = asset['path']
+                drm_cfg  = asset.get('drm_config') or {}
+                svc      = drm_cfg.get('serviceCode', _DRM_SERVICE_LIVE)
+                cid      = drm_cfg.get('contentId', 'dashcenc_rtlde_%s' % channel_id)
+                uid      = drm_cfg.get('uid', _get_device_id())
+                uid_type = drm_cfg.get('uidType', 'deviceid')
+                drm_tok  = _anon_drm_token(svc, 'live', cid, uid=uid, uid_type=uid_type) if drm_cfg else ''
+            else:
+                slug_dash = channel_id.replace('_', '-')
+                if channel_id.startswith('fast'):
+                    mpd_url = ('https://origin.live.rtlde.bedrock.tech/out/v1/rtlde/'
+                               'rtlde-%s/cmaf_cenc00/dash-short-sd.mpd' % slug_dash)
+                else:
+                    mpd_url = ('https://origin.live.rtlde.bedrock.tech/out/v1/rtlde/'
+                               'rtlde-%s/cmaf_cenc71/dash-short-hd720.mpd' % slug_dash)
+                cid     = 'dashcenc_rtlde_%s' % channel_id
+                drm_tok = _anon_drm_token(_DRM_SERVICE_LIVE, 'live', cid)
+            if drm_tok:
+                lic_headers = (
+                    'Content-Type=application%2Foctet-stream'
+                    + '&User-Agent=%s'      % _q(_UA)
+                    + '&Origin=%s'          % _q(_RTL_WEB)
+                    + '&Referer=%s'         % _q(_RTL_WEB + '/')
+                    + '&x-dt-auth-token=%s' % _q(drm_tok)
+                )
+                drm_info = {
+                    'drm_type':    'widevine',
+                    'drm_license': _DRM_LICENSE_URL,
+                    'drm_token':   drm_tok,
+                    'license_key': '%s|%s|R{SSM}|JBlicense' % (_DRM_LICENSE_URL, lic_headers),
+                }
+            else:
+                drm_info = {}
+            return [['RTL+Free Live', mpd_url, drm_info, 'HD', '', 'RTL+Free']]
 
         if u.startswith('video:'):
             clip_id = u[6:]
-            if clip_id:
-                _resolve_and_play_vod(clip_id, title or 'Video')
-            return []
+            if not clip_id:
+                return []
+            log.log('[RTL+Free] get_hosters video clip_id=%s' % clip_id)
+            return _resolve_vod_to_hoster(clip_id)
 
         if u.startswith('program:'):
             rest       = u[8:]
@@ -1037,45 +1109,58 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
             seo_part   = rest.split(':')[1] if ':' in rest else ''
             if ':' in seo_part:
                 seo_part = seo_part.split(':')[0]
+            log.log('[RTL+Free] get_hosters program program_id=%s seo=%s' % (program_id, seo_part))
             clip_id = _clip_from_program(program_id, seo_part)
-            if clip_id:
-                _resolve_and_play_vod(clip_id, title or 'Video')
-            return []
+            if not clip_id:
+                log.log('[RTL+Free] get_hosters program: kein clip_id gefunden', log.LOGWARNING)
+                return []
+            return _resolve_vod_to_hoster(clip_id)
 
         if u.startswith('player:'):
             vp_id = u[7:]
-            if vp_id:
-                _resolve_and_play_vod(vp_id, title or 'Video')
-            return []
+            if not vp_id:
+                return []
+            log.log('[RTL+Free] get_hosters player vp_id=%s' % vp_id)
+            return _resolve_vod_to_hoster(vp_id)
 
+        log.log('[RTL+Free] get_hosters: unbekanntes url-Schema: %s' % u, log.LOGWARNING)
         return []
 
     query = re.sub(r'\s*[\(\[\{].*', '', str(title or '')).strip()
+    log.log('[RTL+Free] get_hosters scout title="%s" year=%s' % (query, year))
     if not query:
         return []
-    year_s = str(year or '')
-    xloc   = '%s/suche?query=%s' % (_RTL_WEB, urllib.parse.quote(query))
-    data   = _api_get('/frontspace/search/layout', {'blockPage': 1, 'nbPages': 3, 'query': query}, x_location=xloc)
-    if not isinstance(data, dict):
-        return []
-    for r in _items_from_layout(data):
+    year_s   = str(year or '')
+    query_lc = query.lower()
+    xloc     = '%s/rtlplus-root/kostenlose-inhalte-main-root-service-f_%s' % (_RTL_WEB, _FREE_FOLDER_ID)
+    data     = _layout_all('/folder/%s/layout' % _FREE_FOLDER_ID, x_location=xloc)
+    all_items = _items_from_layout(data)
+    log.log('[RTL+Free] scout folder items=%d' % len(all_items))
+    for r in all_items:
         if not r.get('is_playable'):
+            continue
+        item_title = re.sub(r'\s*[\(\[\{].*', '', str(r.get('title') or '')).strip().lower()
+        if item_title != query_lc:
             continue
         if year_s and r.get('year') and r['year'] != year_s:
             continue
         r_url = r.get('url', '')
+        log.log('[RTL+Free] get_hosters scout Treffer: %s' % r_url)
         if r_url.startswith('video:'):
             clip_id = r_url[6:]
-            if _resolve_and_play_vod(clip_id, title or 'Video'):
-                return []
+            result  = _resolve_vod_to_hoster(clip_id)
+            if result:
+                return result
         elif r_url.startswith('program:'):
             rest       = r_url[8:]
             program_id = rest.split(':')[0]
             seo_part   = rest.split(':')[1] if ':' in rest else ''
             clip_id    = _clip_from_program(program_id, seo_part)
             if clip_id:
-                if _resolve_and_play_vod(clip_id, title or 'Video'):
-                    return []
+                result = _resolve_vod_to_hoster(clip_id)
+                if result:
+                    return result
+    log.log('[RTL+Free] get_hosters scout: kein Treffer für "%s"' % query, log.LOGWARNING)
     return []
 
 
