@@ -9,7 +9,8 @@ SITE_ID       = 'kellerkino'
 SITE_NAME     = 'Kellerkino'
 SITE_DOMAIN   = 'kellerkino.com'
 TYPE          = 'both'
-GLOBAL_SEARCH = False
+GLOBAL_SEARCH = True
+ACTIVE        = True
 
 _URL_MAIN       = 'https://' + SITE_DOMAIN
 _URL_ARCHIVE    = _URL_MAIN + '/archiv/'
@@ -56,7 +57,7 @@ _HEADERS = {
 
 def _get(url):
     try:
-        r = multiquest.get(quote(url, safe=':/?&=%'), headers=_HEADERS, timeout=15)
+        r = multiquest.get(quote(url, safe=':/?&=+%'), headers=_HEADERS, timeout=15)
         return r.text
     except Exception:
         log.error()
