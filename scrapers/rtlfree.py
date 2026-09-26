@@ -17,6 +17,9 @@ SITE_NAME     = 'RTL+ Free'
 SITE_DOMAIN   = 'plus.rtl.de'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
+ACTIVE        = True
+STREAMLG      = 'LG0'
+
 
 try:
     _ICON = xbmcaddon.Addon().getAddonInfo('icon')
