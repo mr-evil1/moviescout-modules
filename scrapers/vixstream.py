@@ -10,6 +10,8 @@ SITE_NAME     = 'Vixstream'
 SITE_DOMAIN   = 'vixsrc.to'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
+ACTIVE        = True
+STREAMLG      = 'LG1'
 
 _TMDB_IMG  = 'https://image.tmdb.org/t/p/w500'
 _TMDB_BASE = 'https://api.themoviedb.org/3'
