@@ -21,6 +21,8 @@ SITE_NAME     = 'Netzkino'
 SITE_DOMAIN   = 'netzkino.de'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
+ACTIVE        = True
+STREAMLG      = 'LG0'
 
 try:
     _ICON = xbmcaddon.Addon().getAddonInfo('icon')
