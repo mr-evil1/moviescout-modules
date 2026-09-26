@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import re
 import base64
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlencode
 from resources.lib import multiquest, log
 from resources.lib.control import getSetting
 
@@ -21,6 +21,19 @@ _S_GENRES  = '__vix_genres__'
 _S_BROWSE  = '__vix_browse__:'
 _S_SEASONS = '__vix_seasons__:'
 _S_EPS     = '__vix_eps__:'
+
+_HDR_PAGE = {
+    'sec-fetch-site': 'same-origin',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-dest': 'iframe',
+    'upgrade-insecure-requests': '1',
+}
+
+_HDR_XHR = {
+    'sec-fetch-site': 'same-origin',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-dest': 'empty',
+}
 
 
 def _base():
@@ -50,6 +63,7 @@ def _vix_get(session, path, referer=None):
         r = session.get(url, headers={
             'Referer': referer or _base() + '/',
             'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+            **_HDR_PAGE,
         }, timeout=15)
         r.raise_for_status()
         return r.text
@@ -63,15 +77,31 @@ def _vix_api(session, path, referer):
     try:
         r = session.get(url, headers={
             'Referer': referer,
-            'Accept': 'application/json, */*',
+            'Accept': 'application/json, text/plain, */*',
             'X-Requested-With': 'XMLHttpRequest',
             'Origin': _base(),
+            **_HDR_XHR,
         }, timeout=12)
         r.raise_for_status()
         return r.json()
     except Exception:
         log.error()
         return None
+
+
+def _vix_playlist(session, playlist_url, embed_url):
+    try:
+        r = session.get(playlist_url, headers={
+            'Referer': embed_url,
+            'Accept': '*/*',
+            'Origin': _base(),
+            **_HDR_XHR,
+        }, timeout=12)
+        r.raise_for_status()
+        return r.text
+    except Exception:
+        log.error()
+        return ''
 
 
 def _poster(path):
@@ -175,7 +205,7 @@ def _get_episodes(encoded):
         ep_title = ep.get('name', '') or ('Episode %d' % ep_num)
         ep_still = _poster(ep.get('still_path', '')) or poster
         items.append({
-            'title':   'S%02dE%02d – %s' % (int(season), ep_num, ep_title),
+            'title':   'S%02dE%02d \u2013 %s' % (int(season), ep_num, ep_title),
             'url':     '%s|s%s|e%d' % (tmdb_id, season, ep_num),
             'poster':  ep_still, 'plot': ep.get('overview', ''),
             'mediatype': 'episode', 'is_playable': True, 'next_func': 'get_hosters',
@@ -209,59 +239,55 @@ def _resolve(tmdb_id, season=0, episode=0):
 
         result = []
         for lang in ('de', 'en'):
-            if '?' in src:
-                embed_path = src + '&lang=' + lang
-            else:
-                embed_path = src + '?lang=' + lang
+            embed_path = src + ('&' if '?' in src else '?') + 'lang=' + lang
+            full_embed  = embed_path if embed_path.startswith('http') else _base() + embed_path
 
             embed_html = _vix_get(sess, embed_path, _base() + page_url)
             if not embed_html:
                 log.log('[vixstream] _resolve: kein embed_html fuer lang=%s path=%s' % (lang, embed_path))
                 continue
 
-            full_embed = embed_path if embed_path.startswith('http') else _base() + embed_path
             video_id_m = re.search(r'/embed/([^/?&#]+)', full_embed)
             if not video_id_m:
                 log.log('[vixstream] _resolve: video_id nicht gefunden in %s' % full_embed)
                 continue
             video_id = video_id_m.group(1)
 
-            token = ''
-            for pat in (
-                r'["\']token["\']\s*:\s*["\']([a-f0-9A-F\-]{16,})["\']',
-                r'token["\']?\s*:\s*["\']([a-f0-9A-F\-]{16,})["\']',
-                r'const\s+token\s*=\s*["\']([a-f0-9A-F\-]{16,})["\']',
-            ):
-                m = re.search(pat, embed_html)
-                if m:
-                    token = m.group(1)
-                    break
+            embed_url = '%s/embed/%s' % (_base(), video_id)
 
-            expires = ''
-            for pat in (
-                r'["\']expires["\']\s*:\s*["\']?(\d{10})["\']?',
-                r'expires["\']?\s*:\s*["\']?(\d{10})',
-            ):
-                m = re.search(pat, embed_html)
-                if m:
-                    expires = m.group(1)
-                    break
+            _mp = r'window\.masterPlaylist[\s\S]{0,600}?'
+            mp_token_m   = re.search(_mp + r"""['"]token['"]\s*:\s*['"]([^'"]+)['"]""", embed_html)
+            mp_expires_m = re.search(_mp + r"""['"]expires['"]\s*:\s*['"](\d{10})['"]""", embed_html)
+            mp_url_m     = re.search(_mp + r"""url\s*:\s*['"]([^'"]+)['"]""", embed_html)
 
-            if not token or not expires:
-                log.log('[vixstream] _resolve: token=%r expires=%r – uebersprungen (lang=%s)' % (token, expires, lang))
+            if not mp_token_m or not mp_expires_m or not mp_url_m:
+                log.log('[vixstream] _resolve: window.masterPlaylist nicht gefunden (lang=%s)' % lang)
                 continue
 
-            playlist_url = '%s/playlist/%s?token=%s&expires=%s&h=1&lang=%s' % (
-                _base(), video_id, token, expires, lang
+            mp_token   = mp_token_m.group(1)
+            mp_expires = mp_expires_m.group(1)
+            mp_base    = mp_url_m.group(1)
+
+            sep = '&' if '?' in mp_base else '?'
+            playlist_url = '%s%stoken=%s&expires=%s&h=1&lang=%s' % (
+                mp_base, sep, mp_token, mp_expires, lang
             )
-            from urllib.parse import urlencode
+
+            m3u8 = _vix_playlist(sess, playlist_url, embed_url)
+            if not m3u8 or not m3u8.startswith('#EXTM3U'):
+                log.log('[vixstream] _resolve: ungueltige M3U8 fuer lang=%s' % lang)
+                continue
+
             final = '%s|%s' % (playlist_url, urlencode({
-                'User-Agent':  multiquest._DEFAULT_UA,
-                'Referer':     '%s/embed/%s' % (_base(), video_id),
-                'Origin':      _base(),
+                'User-Agent': multiquest._DEFAULT_UA,
+                'Referer':    embed_url,
+                'Origin':     _base(),
+                'sec-fetch-site': 'same-origin',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-dest': 'empty',
             }))
             label = 'Deutsch' if lang == 'de' else 'Englisch'
-            result.append(('VixCloud (%s)' % label, final, True, '1080p', lang))
+            result.append(('VixCloud (%s)' % label, final, True, '720p', lang))
 
     return result
 
@@ -284,7 +310,7 @@ def _series_menu():
 
 
 _GENRES = [
-    (28,'Action'),(12,'Abenteuer'),(16,'Animation'),(35,'Komödie'),
+    (28,'Action'),(12,'Abenteuer'),(16,'Animation'),(35,'Kom\u00f6die'),
     (80,'Krimi'),(99,'Dokumentation'),(18,'Drama'),(10751,'Familie'),
     (14,'Fantasy'),(36,'Geschichte'),(27,'Horror'),(10402,'Musik'),
     (9648,'Mystery'),(10749,'Romantik'),(878,'Sci-Fi'),(53,'Thriller'),
