@@ -18,7 +18,7 @@ SITE_DOMAIN   = 'pluto.tv'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
 ACTIVE        = True
-
+STREAMLG      = 'LG0'
 
 try:
     _ICON = xbmcaddon.Addon().getAddonInfo('icon')
