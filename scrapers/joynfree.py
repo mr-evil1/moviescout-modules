@@ -11,6 +11,8 @@ SITE_NAME     = 'JoynFree'
 SITE_DOMAIN   = 'www.joyn.de'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
+ACTIVE        = True
+STREAMLG      = 'LG0'
 
 _SUPPORTED = {'DE', 'AT', 'CH'}
 _COUNTRY   = None
