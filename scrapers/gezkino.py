@@ -15,6 +15,7 @@ SITE_NAME     = 'GEZ Kino'
 SITE_DOMAIN   = 'mediathekviewweb.de'
 TYPE          = 'movie'
 GLOBAL_SEARCH = True
+STREAMLG      = 'LG0'
 
 _UA          = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 _API_URL     = 'https://mediathekviewweb.de/api/query'
