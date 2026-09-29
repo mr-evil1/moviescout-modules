@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 import re
-import json
+from html import unescape
 from urllib.parse import quote, urlparse
+import xbmcgui
 from resources.lib import multiquest, log
 
 SITE_ID       = 'movie2k'
 SITE_NAME     = 'Movie2k'
-SITE_DOMAIN   = 'movie2k.ch'
+SITE_DOMAIN   = 'movie2k.cx'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
 
@@ -14,10 +15,47 @@ _UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 
 _S_MOVIES  = '__m2k_movies__'
 _S_SERIES  = '__m2k_series__'
-_S_GENRES  = '__m2k_genres__'
-_S_BROWSE  = '__m2k_browse__:'
+_S_NEW     = '__m2k_new__'
+_S_SEARCH  = '__m2k_search__'
+_S_ENTRIES = '__m2k_entries__:'
+_S_UPDATES = '__m2k_updates__:'
+_S_TILES   = '__m2k_tiles__:'
+_S_GENRES  = '__m2k_genres__:'
 _S_SEASONS = '__m2k_seasons__:'
 _S_EPS     = '__m2k_eps__:'
+
+_PANE_UPDATES = 'tab-updates'
+_PANE_CINEMA  = 'tab-cinema'
+_PANE_POPULAR = 'tab-popular'
+
+_RE_ENTRY = (r'<td width="115" valign="top">\s*<img src="([^"]+)"[^>]*>\s*</td>\s*'
+             r'<td valign="top">\s*<h2[^>]*>\s*(?:<!--[^>]*-->\s*)?'
+             r'<a href="([^"]+)"[^>]*>(.*?)</a>(.*?)</h2>\s*'
+             r'<div class="beschreibung"[^>]*>(.*?)</span>')
+_RE_GENRE = r'<a href="([^"]+)" class="genre-item">\s*<div class="genre-name">([^<]+)</div>'
+_RE_SEASON_BOX = r'<select id="season-select".*?</select>'
+_RE_EPISODE_BOX = r'<select id="episode-select".*?</select>'
+_RE_SEASON_OPT = r'<option[^>]*>\s*S(\d+)\s*</option>'
+_RE_EPISODE_OPT = r'<option value="([^"]+)"[^>]*data-name="([^"]*)"[^>]*data-overview="([^"]*)"[^>]*>\s*E(\d+)'
+_RE_MOVIE_HOSTER = r'<option value="(http[^"]+)"[^>]*data-quality="([^"]*)"'
+_RE_EPISODE_BLOCK = r'data-episode-id="%s"(.*?)</table>'
+_RE_EPISODE_HOSTER = r'''loadMirror\('(http[^']+)'\)"\s*data-host="[^"]+"\s*data-mirror="true"'''
+_RE_SERIES_MARK = r'type=(?:tv|series)'
+_RE_UPDATE = (r'<td valign="top" height="100%">\s*<a href="([^"]+)">\s*'
+              r'<font[^>]*>\s*<strong>(.*?)</strong>\s*</font>\s*'
+              r'(?:<font[^>]*>[^<]+</font>\s*)?</a>')
+_RE_TILE = (r'<img src="([^"]+)"[^>]*>\s*</a>\s*</div>\s*<div[^>]*>\s*'
+            r'<h2[^>]*>\s*<a href="([^"]+)">\s*'
+            r'<font[^>]*>\s*<strong>(.*?)</strong>\s*</font>\s*'
+            r'(?:<font[^>]*>[^<]+</font>\s*)?</a>')
+_RE_OG_IMAGE = r'<meta property="og:image" content="([^"]+)"'
+_RE_DESC = r'<div class="beschreibung"[^>]*>(.*?)</div>'
+_RE_YEAR = r'\|\s*(\d{4})\s*(?:&nbsp;)?\|'
+_RE_RATING = r'Bewertung:\s*([\d.,]+)'
+
+_SEARCH_PROP = 'moviescout.movie2k.lastSearchText'
+
+_QUALITY = {'hd': '720p', 'sd': '480p', 'dvd': 'DVD', 'cam': 'CAM'}
 
 
 def _base():
@@ -35,293 +73,386 @@ def _get(url, referer=None):
         return ''
 
 
-def _get_json(url, referer=None):
-    headers = {
-        'User-Agent': _UA,
-        'Referer': referer or _base() + '/',
-        'Accept': 'application/json, text/plain, */*',
-        'Origin': _base(),
-    }
-    try:
-        r = multiquest.get(url, headers=headers, timeout=12)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        log.error()
-        return None
+def _parse(html, pattern):
+    return re.findall(pattern, html or '', re.S)
+
+
+def _first(html, pattern):
+    m = re.search(pattern, html or '', re.S)
+    if not m:
+        return ''
+    return m.group(1) if m.groups() else m.group(0)
+
+
+def _text(s):
+    return unescape(re.sub(r'<[^>]+>', '', s or '')).strip()
 
 
 def _cleantitle(s):
     return re.sub(r'[^a-z0-9]', '', (s or '').lower())
 
 
-def _quality(text):
-    t = (text or '').upper()
-    if '2160' in t or '4K' in t: return '4K'
-    if '1080' in t: return '1080p'
-    if '720' in t: return '720p'
-    if '480' in t: return '480p'
-    return 'HD'
+def _absolute(url):
+    url = unescape(url or '')
+    if url.startswith('//'):
+        return 'https:' + url
+    if url.startswith('/'):
+        return _base() + url
+    return url
 
 
-def _poster(path):
-    if not path: return ''
-    if path.startswith('http'): return path
-    return 'https://image.tmdb.org/t/p/w300' + path
+def _request_url(url):
+    url = re.sub(r'(/stream/)([^?]*)',
+                 lambda m: m.group(1) + m.group(2).replace('/', '-').replace('#', '-'), url)
+    return quote(url, safe=':/?&=%#+')
 
 
-def _is_series(title):
-    return bool(re.search(r'\b(Staffel|Season)\s*\d+', title or '', re.I))
+def _split(value):
+    if '|' in value:
+        u, p = value.rsplit('|', 1)
+        return u, p
+    return value, ''
 
 
-def _item_from_api(movie, is_series=False):
-    _id    = str(movie.get('_id', ''))
-    title  = movie.get('title', '')
-    year   = str(movie.get('year', ''))
-    poster = _poster(movie.get('poster_path_season') or movie.get('poster_path') or movie.get('backdrop_path', ''))
-    plot   = movie.get('storyline') or movie.get('overview', '')
-    try:
-        rating = float(movie.get('rating', 0))
-    except Exception:
-        rating = 0.0
+def _pane_content(html, pane_id):
+    m = re.search(r'<div[^>]*id="%s"[^>]*>' % pane_id, html or '')
+    if not m:
+        return ''
+    start = m.end()
+    depth = 1
+    for tag in re.finditer(r'<div\b|</div>', html[start:]):
+        depth += 1 if tag.group(0) == '<div' else -1
+        if depth == 0:
+            return html[start:start + tag.start()]
+    return html[start:]
+
+
+def _next_page(html, url):
+    m = re.search(r'[?&]page=(\d+)', url)
+    nxt = (int(m.group(1)) if m else 1) + 1
+    link = _first(html, r'href="([^"]*[?&]page=%d)"' % nxt)
+    if not link:
+        return ''
+    link = unescape(link)
+    if link.startswith('?'):
+        link = url.split('?')[0] + link
+    return _absolute(link)
+
+
+def _make_item(name, link, poster='', year='', rating=0.0, plot=''):
+    is_series = bool(re.search(_RE_SERIES_MARK, link))
+    url = _absolute(link)
+    if poster and 'placehold' in poster:
+        poster = ''
+    item = {
+        'title':  name,
+        'poster': _absolute(poster) if poster else '',
+        'year':   year,
+        'plot':   plot,
+        'rating': rating,
+    }
     if is_series:
-        return {
-            'title':       title,
-            'url':         _S_EPS + _id,
-            'poster':      poster,
-            'year':        year,
-            'plot':        plot,
-            'rating':      rating,
+        item.update({
+            'url':         _S_SEASONS + url,
             'mediatype':   'tvshow',
             'is_playable': False,
             'next_func':   'load',
-        }
-    return {
-        'title':       title,
-        'url':         _id,
-        'poster':      poster,
-        'year':        year,
-        'plot':        plot,
-        'rating':      rating,
-        'mediatype':   'movie',
-        'is_playable': True,
-        'next_func':   'get_hosters',
-    }
-
-
-def _browse_api(params, page=1):
-    if '|page=' in params:
-        params, pg_str = params.rsplit('|page=', 1)
-        page = int(pg_str)
-    is_series = 'tvseries' in params or 'type=tv' in params
-    url  = _base() + '/data/browse/?' + params + '&page=%d&limit=20' % page
-    data = _get_json(url)
-    if not data:
-        return []
-    items = []
-    for m in data.get('movies', []):
-        # Serien erkennen: entweder browse-Typ oder Title enthält 'Staffel/Season'
-        serie = is_series or _is_series(m.get('title', ''))
-        items.append(_item_from_api(m, serie))
-    pager = data.get('pager', {})
-    if page < int(pager.get('totalPages', page)):
-        items.append({
-            'title':       '[B]>>> Weiter[/B]',
-            'url':         _S_BROWSE + params + '|page=%d' % (page + 1),
-            'next_func':   'load',
-            'is_playable': False,
         })
+    else:
+        item.update({
+            'url':         url,
+            'mediatype':   'movie',
+            'is_playable': True,
+            'next_func':   'get_hosters',
+        })
+    return item
+
+
+def _folder(title, url):
+    return {'title': title, 'url': url, 'next_func': 'load', 'is_playable': False}
+
+
+def _entries(url, pane='', keyword=''):
+    html = _get(_request_url(url))
+    if pane:
+        html = _pane_content(html, pane)
+    seen = set()
+    items = []
+    for thumb, link, title, head_rest, desc in _parse(html, _RE_ENTRY):
+        if link in seen:
+            continue
+        seen.add(link)
+        name = _text(title).replace('[SERIE]', '').strip()
+        if not name:
+            continue
+        if keyword and _cleantitle(keyword) not in _cleantitle(name):
+            continue
+        year = _first(desc, _RE_YEAR)
+        try:
+            rating = float(_first(desc, _RE_RATING).replace(',', '.'))
+        except Exception:
+            rating = 0.0
+        items.append(_make_item(name, link, thumb, year, rating))
+    if items and not keyword:
+        nxt = _next_page(html, url)
+        if nxt:
+            items.append(_folder('[B]>>> Weiter[/B]', _S_ENTRIES + nxt))
     return items
 
 
-def _get_episodes(_id):
-    # Lädt Episoden direkt aus /data/watch/ – keine separate Seasons-API
-    data = _get_json(_base() + '/data/watch/?_id=' + _id)
-    if not data:
-        return []
-    poster = _poster(data.get('poster_path_season') or data.get('poster_path', ''))
-    plot   = data.get('storyline') or data.get('overview', '')
-    s_num  = data.get('s', 1)
-    # Nur Streams MIT 'e'-Feld (Episoden), gelöschte ausschließen
-    streams = [s for s in data.get('streams', []) if not s.get('deleted') and 'e' in s]
-    ep_nums = sorted(set(int(s['e']) for s in streams))
+def _updates(url):
+    html = _pane_content(_get(_request_url(url)), _PANE_UPDATES)
+    seen = set()
     items = []
-    for ep in ep_nums:
-        ep_title = next(
-            (s.get('e_title', '') for s in streams if int(s.get('e', -1)) == ep and s.get('e_title')),
-            ''
-        )
-        label = 'S%02dE%02d' % (s_num, ep)
-        if ep_title: label += ' - ' + ep_title
+    for link, title in _parse(html, _RE_UPDATE):
+        key = link.split('?')[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        name = _text(title)
+        if not name:
+            continue
+        items.append(_make_item(name, link))
+    return items
+
+
+def _tiles(url):
+    html = _pane_content(_get(_request_url(url)), _PANE_POPULAR)
+    seen = set()
+    items = []
+    for thumb, link, title in _parse(html, _RE_TILE):
+        key = link.split('?')[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        name = _text(title)
+        if not name:
+            continue
+        items.append(_make_item(name, link, thumb))
+    return items
+
+
+def _genres(url):
+    html = _get(_request_url(url))
+    return [_folder(_text(name), _S_ENTRIES + _absolute(link)) for link, name in _parse(html, _RE_GENRE)]
+
+
+def _poster_of(html):
+    poster = _first(html, _RE_OG_IMAGE)
+    if not poster or 'placehold' in poster:
+        return ''
+    return poster
+
+
+def _seasons(url):
+    html = _get(_request_url(url))
+    box = _first(html, _RE_SEASON_BOX)
+    seasons = _parse(box, _RE_SEASON_OPT)
+    if not seasons:
+        return []
+    poster = _poster_of(html)
+    plot = _text(_first(html, _RE_DESC))
+    base = url.split('?')[0]
+    items = []
+    for s in seasons:
+        item = {
+            'title':       'Staffel %s' % s,
+            'url':         _S_EPS + '%s?season=%s' % (base, s),
+            'poster':      poster,
+            'mediatype':   'season',
+            'season':      int(s),
+            'is_playable': False,
+            'next_func':   'load',
+        }
+        if plot:
+            item['plot'] = plot
+        items.append(item)
+    return items
+
+
+def _episodes(url):
+    html = _get(_request_url(url))
+    box = _first(html, _RE_EPISODE_BOX)
+    episodes = _parse(box, _RE_EPISODE_OPT)
+    if not episodes:
+        return []
+    poster = _poster_of(html)
+    sm = re.search(r'[?&]season=(\d+)', url)
+    season = int(sm.group(1)) if sm else 1
+    items = []
+    for _id, name, overview, e in episodes:
+        label = 'S%02dE%02d' % (season, int(e))
+        name = _text(name)
+        if name:
+            label += ' - ' + name
         item = {
             'title':       label,
-            'url':         _id,
+            'url':         url,
             'poster':      poster,
             'mediatype':   'episode',
             'is_playable': True,
             'next_func':   'get_hosters',
-            'season':      s_num,
-            'episode':     ep,
+            'season':      season,
+            'episode':     int(e),
         }
-        if plot: item['plot'] = plot
+        overview = _text(overview)
+        if overview:
+            item['plot'] = overview
         items.append(item)
     return items
 
 
 def _movies_menu():
-    orders = [
-        ('Featured',         'featured'),
-        ('Neuerscheinungen', 'releases'),
-        ('Trending',         'trending'),
-        ('Updates',          'updates'),
-        ('Requested',        'requested'),
-        ('Top bewertet',     'rating'),
-        ('Meiste Votes',     'votes'),
-        ('Meiste Views',     'views'),
+    return [
+        _folder('Alle Filme', _S_ENTRIES + _base() + '/movies'),
+        _folder('Kinofilme', _S_ENTRIES + _base() + '|' + _PANE_CINEMA),
+        _folder('Beliebt', _S_TILES + _base()),
+        _folder('Genre', _S_GENRES + _base() + '/genres'),
     ]
-    return [{'title': l, 'url': _S_BROWSE + 'lang=2&type=movies&order_by=' + o,
-             'next_func': 'load', 'is_playable': False} for l, o in orders]
 
 
 def _series_menu():
-    orders = [
-        ('Neuerscheinungen', 'releases'),
-        ('Trending',         'trending'),
-        ('Updates',          'updates'),
-        ('Requested',        'requested'),
-        ('Top bewertet',     'rating'),
-        ('Meiste Votes',     'votes'),
-        ('Meiste Views',     'views'),
+    return [
+        _folder('Alle Serien', _S_ENTRIES + _base() + '/tv/all'),
+        _folder('Beliebt', _S_ENTRIES + _base() + '/tv|' + _PANE_CINEMA),
+        _folder('Im Trend', _S_TILES + _base() + '/tv'),
+        _folder('Genre', _S_GENRES + _base() + '/tv/genres'),
     ]
-    return [{'title': l, 'url': _S_BROWSE + 'lang=2&type=tvseries&order_by=' + o,
-             'next_func': 'load', 'is_playable': False} for l, o in orders]
 
 
-def _genres_menu():
-    genres = [
-        'Action', 'Abenteuer', 'Animation', 'Biographie', 'Dokumentation',
-        'Drama', 'Familie', 'Fantasy', 'Horror', 'Komödie',
-        'Krimi', 'Mystery', 'Romantik', 'Sci-Fi', 'Thriller',
+def _new_menu():
+    return [
+        _folder('Filme', _S_UPDATES + _base()),
+        _folder('Serien', _S_UPDATES + _base() + '/tv'),
     ]
-    return [{'title': g, 'url': _S_BROWSE + 'lang=2&type=movies&genres=%s&order_by=new' % quote(g),
-             'next_func': 'load', 'is_playable': False} for g in genres]
+
+
+def _search_menu():
+    win = xbmcgui.Window(10000)
+    text = win.getProperty(_SEARCH_PROP)
+    if not text:
+        text = xbmcgui.Dialog().input('Suche', type=xbmcgui.INPUT_ALPHANUM)
+        if not text:
+            return []
+        win.setProperty(_SEARCH_PROP, text)
+    return search(text)
 
 
 def load(url='', params=None):
     if not url:
+        xbmcgui.Window(10000).clearProperty(_SEARCH_PROP)
         return [
-            {'title': 'Filme',  'url': _S_MOVIES, 'next_func': 'load', 'is_playable': False},
-            {'title': 'Serien', 'url': _S_SERIES, 'next_func': 'load', 'is_playable': False},
-            {'title': 'Genre',  'url': _S_GENRES, 'next_func': 'load', 'is_playable': False},
+            _folder('Neu auf der Seite', _S_NEW),
+            _folder('Filme', _S_MOVIES),
+            _folder('Serien', _S_SERIES),
+            _folder('Suche', _S_SEARCH),
         ]
+    if url == _S_NEW:     return _new_menu()
     if url == _S_MOVIES:  return _movies_menu()
     if url == _S_SERIES:  return _series_menu()
-    if url == _S_GENRES:  return _genres_menu()
-    if url.startswith(_S_BROWSE):  return _browse_api(url[len(_S_BROWSE):])
-    if url.startswith(_S_SEASONS): return _get_episodes(url[len(_S_SEASONS):])
-    if url.startswith(_S_EPS):     return _get_episodes(url[len(_S_EPS):])
+    if url == _S_SEARCH:  return _search_menu()
+    if url.startswith(_S_ENTRIES):
+        target, pane = _split(url[len(_S_ENTRIES):])
+        return _entries(target, pane)
+    if url.startswith(_S_UPDATES): return _updates(url[len(_S_UPDATES):])
+    if url.startswith(_S_TILES):   return _tiles(url[len(_S_TILES):])
+    if url.startswith(_S_GENRES):  return _genres(url[len(_S_GENRES):])
+    if url.startswith(_S_SEASONS): return _seasons(url[len(_S_SEASONS):])
+    if url.startswith(_S_EPS):     return _episodes(url[len(_S_EPS):])
     return []
 
 
-def _find_id(title, year, season):
-    clean    = _cleantitle(title)
-    stype    = 'tvseries' if season else 'movies'
-    data = _get_json(
-        _base() + '/data/browse/?lang=2&type=%s&order_by=new&page=1&keyword=%s'
-        % (stype, quote(title))
-    )
-    if not data:
-        return ''
-    for m in data.get('movies', []):
-        raw_title = m.get('title', '')
-        # Staffel-/Season-Suffix entfernen für Titelvergleich
-        mt = re.sub(r'\s*[-–]\s*(Staffel|Season)\s*\d+.*$', '', raw_title, flags=re.I).strip()
-        if _cleantitle(mt) != clean:
+def _find_url(title, year, season):
+    clean = _cleantitle(title)
+    html = _get(_request_url(_base() + '/search?q=' + quote(title)))
+    for thumb, link, t, head_rest, desc in _parse(html, _RE_ENTRY):
+        name = _text(t).replace('[SERIE]', '').strip()
+        if _cleantitle(name) != clean:
             continue
-        if season:
-            # Staffel-Nummer aus API-Titel oder 's'-Feld lesen
-            sn = m.get('s', 0)
-            if not sn:
-                sm = re.search(r'(?:Staffel|Season)\s*(\d+)', raw_title, re.I)
-                sn = int(sm.group(1)) if sm else 0
-            if int(sn) != int(season):
-                continue
-        else:
+        is_series = bool(re.search(_RE_SERIES_MARK, link))
+        if bool(season) != is_series:
+            continue
+        if not season and year:
+            y = _first(desc, _RE_YEAR)
             try:
-                if year and int(m.get('year', 0)) and abs(int(m['year']) - int(year)) > 1:
+                if y and abs(int(y) - int(year)) > 1:
                     continue
             except Exception:
                 pass
-        return str(m['_id'])
+        return _absolute(link)
     return ''
 
 
 def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
-    season_i  = int(season  or 0)
+    season_i  = int(season or 0)
     episode_i = int(episode or 0)
 
-    _id = url if (url and not url.startswith('__')) else ''
-    if not _id and title:
-        _id = _find_id(title, year, season_i)
-    if not _id:
+    page = url if (url and not url.startswith('__')) else ''
+    if not page and title:
+        page = _find_url(title, year, season_i)
+    if not page:
+        return []
+    if season_i:
+        base = page.split('?')[0]
+        qs = re.sub(r'[?&]season=\d+', '', page[len(base):])
+        page = base + qs + ('&' if qs else '?') + 'season=%d' % season_i
+
+    html = _get(_request_url(page))
+    if not html:
         return []
 
-    data = _get_json(_base() + '/data/watch/?_id=' + _id)
-    if not data:
-        return []
-
-    streams = [s for s in data.get('streams', []) if not s.get('deleted')]
-
-    if season_i and episode_i:
-        # Episoden-Streams: nur passende Episode
-        streams = [s for s in streams if 'e' in s and int(s.get('e', -1)) == episode_i]
+    found = []
+    if episode_i:
+        box = _first(html, _RE_EPISODE_BOX)
+        ep_id = ''
+        for eid, name, overview, e in _parse(box, _RE_EPISODE_OPT):
+            if int(e) == episode_i:
+                ep_id = eid
+                break
+        if not ep_id:
+            return []
+        block = _first(html, _RE_EPISODE_BLOCK % re.escape(ep_id))
+        for link in _parse(block, _RE_EPISODE_HOSTER):
+            found.append((link, 'HD'))
     else:
-        # Film-Streams: nur Streams OHNE Episode-Feld
-        streams = [s for s in streams if 'e' not in s]
+        for link, q in _parse(html, _RE_MOVIE_HOSTER):
+            found.append((link, _QUALITY.get(q.lower(), 'HD')))
 
     result = []
-    seen   = set()
-    for s in streams:
-        raw_url = s.get('stream', '')
-        if not raw_url or 'youtube' in raw_url.lower():
+    seen = set()
+    for link, quality in found:
+        link = re.sub(r'^(https?:)/+', r'\1//', link)
+        if 'youtube' in link.lower() or link in seen:
             continue
-        if raw_url.startswith('//'): raw_url = 'https:' + raw_url
-        hostname = urlparse(raw_url).hostname or ''
-        if hostname in seen: continue
-        seen.add(hostname)
-        hoster  = '.'.join(hostname.split('.')[-2:]) if hostname else SITE_NAME
-        quality = _quality(s.get('release', ''))
-        result.append((hoster, raw_url, False, quality, 'de'))
+        seen.add(link)
+        hostname = urlparse(link).hostname or ''
+        hoster = '.'.join(hostname.split('.')[-2:]) if hostname else SITE_NAME
+        result.append((hoster, link, False, quality, 'de'))
     return result
 
 
 def search(query='', params=None):
-    data = _get_json(_base() + '/data/browse/?lang=2&order_by=new&page=1&keyword=' + quote(query))
-    if not data:
+    if not query or not query.strip():
         return []
-    items = []
-    for m in data.get('movies', []):
-        serie = _is_series(m.get('title', ''))
-        items.append(_item_from_api(m, serie))
-    return items
+    return _entries(_base() + '/search?q=' + quote(query), keyword=query)
 
 
 def get_details(url='', params=None):
     if not url or url.startswith('__'):
         return {}
-    _id = url
+    page = url
     for prefix in (_S_SEASONS, _S_EPS):
         if url.startswith(prefix):
-            _id = url[len(prefix):]
+            page = url[len(prefix):]
             break
-    data = _get_json(_base() + '/data/watch/?_id=' + _id)
-    if not data:
+    html = _get(_request_url(page))
+    if not html:
         return {}
     result = {}
-    plot = data.get('storyline') or data.get('overview', '')
-    if plot:   result['plot']   = plot
-    if data.get('year'):   result['year']   = str(data['year'])
-    if data.get('rating'): result['rating'] = float(data['rating'])
-    poster = _poster(data.get('poster_path') or data.get('poster_path_season', ''))
-    if poster: result['poster'] = poster
+    plot = _text(_first(html, _RE_DESC))
+    if plot:
+        result['plot'] = plot
+    poster = _poster_of(html)
+    if poster:
+        result['poster'] = poster
     return result
