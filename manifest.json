@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_update": "2026-09-29T12:38:41Z",
+  "last_update": "2026-09-29T12:43:26Z",
   "scrapers": [
     {
       "name": "animetoast",
@@ -105,6 +105,13 @@
       "version": "1.0",
       "domain": "",
       "description": "Kinofun Scraper",
+      "last_modified": "2026-09-29"
+    },
+    {
+      "name": "kinoger",
+      "version": "1.0",
+      "domain": "",
+      "description": "Kinoger Scraper",
       "last_modified": "2026-09-29"
     },
     {
