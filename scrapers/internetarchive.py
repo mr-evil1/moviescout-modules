@@ -1,44 +1,56 @@
 # -*- coding: utf-8 -*-
 import re
 import json
+import datetime
 from urllib.parse import quote_plus
+import xbmcgui
 from resources.lib import multiquest, log
 
 SITE_ID       = 'internetarchive'
 SITE_NAME     = 'Internet Archive'
 SITE_DOMAIN   = 'archive.org'
-TYPE          = 'movie'
+TYPE          = 'both'
 GLOBAL_SEARCH = True
+ACTIVE        = True
+STREAMLG      = 'LG0'
 
 _UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
 _COLLECTIONS = {
-    'Cinemocracy':       'cinemocracy',
-    'Feature Films':     'feature_films',
-    'Film Noir':         'Film_Noir',
-    'Movie Trailers':    'movie_trailers',
-    'SciFi / Horror':    'SciFi_Horror',
-    'Short Format Films':'short_films',
+    'Cinemocracy':        'cinemocracy',
+    'Feature Films':      'feature_films',
+    'Film Noir':          'Film_Noir',
+    'Movie Trailers':     'movie_trailers',
+    'SciFi / Horror':     'SciFi_Horror',
+    'Short Format Films': 'short_films',
 }
+
+_GENRES = [
+    'Action', 'Adventure', 'Animation', 'Comedy', 'Crime',
+    'Documentary', 'Drama', 'Family', 'Fantasy', 'Film Noir',
+    'Horror', 'Musical', 'Mystery', 'Romance', 'Science Fiction',
+    'Short', 'Thriller', 'War', 'Western',
+]
 
 _LANG_MAP = {
     'ger': 'de', 'german': 'de',
     'eng': 'en', 'english': 'en',
 }
 
+_S_COLLECTIONS = '__ia_collections__'
+_S_COLL        = '__ia_coll__:'
+_S_GENRES      = '__ia_genres__'
+_S_GENRE       = '__ia_genre__:'
+_S_JAHRE       = '__ia_jahre__'
+_S_JAHR        = '__ia_jahr__:'
+_S_NEU         = '__ia_neu__:'
+
+_ROWS     = 500
+_PAGE_NEU = 50
+
 
 def _base():
     return 'https://' + SITE_DOMAIN
-
-
-def _get(url):
-    try:
-        r = multiquest.get(url, headers={'User-Agent': _UA}, timeout=15)
-        r.raise_for_status()
-        return r.text
-    except Exception:
-        log.error()
-        return ''
 
 
 def _get_json(url):
@@ -51,24 +63,20 @@ def _get_json(url):
         return {}
 
 
-def _coll_url(coll_id):
-    return (
-        _base() + '/advancedsearch.php?q=collection%3A%22' + coll_id +
-        '%22&fl%5B%5D=description&fl%5B%5D=identifier&fl%5B%5D=language'
-        '&fl%5B%5D=title&fl%5B%5D=year&rows=80000&page=1&output=json'
-    )
-
-
-def _search_url(query):
-    return (
-        _base() + '/advancedsearch.php?q=' + quote_plus(query) +
-        '%20AND%20mediatype%3Amovies&fl%5B%5D=description&fl%5B%5D=identifier'
-        '&fl%5B%5D=language&fl%5B%5D=title&fl%5B%5D=year&rows=500&output=json'
-    )
-
-
 def _thumb(identifier):
     return 'https://archive.org/services/img/' + identifier
+
+
+def _adv_url(q, sort='', rows=_ROWS, page=1):
+    url = (
+        _base() + '/advancedsearch.php?q=' + q +
+        '+AND+mediatype%3Amovies'
+        '&fl[]=description&fl[]=identifier&fl[]=language&fl[]=title&fl[]=year'
+        '&rows=' + str(rows) + '&page=' + str(page) + '&output=json'
+    )
+    if sort:
+        url += '&sort[]=' + sort
+    return url
 
 
 def _parse_docs(docs):
@@ -78,65 +86,150 @@ def _parse_docs(docs):
         title      = doc.get('title', '')
         if not identifier or not title:
             continue
-        lang_raw = (doc.get('language') or '').lower().strip()
         item = {
             'title':       title,
-            'url':         _base() + '/details/' + identifier,
+            'url':         identifier,
             'poster':      _thumb(identifier),
             'mediatype':   'movie',
             'next_func':   'get_hosters',
             'is_playable': True,
         }
-        if doc.get('year') and len(str(doc['year'])) == 4:
-            item['year'] = str(doc['year'])
-        if doc.get('description'):
-            item['plot'] = str(doc['description'])[:600]
-        lang_out = _LANG_MAP.get(lang_raw, '')
+        year = str(doc.get('year') or '')
+        if len(year) == 4:
+            item['year'] = year
+        desc = doc.get('description') or ''
+        if desc:
+            item['plot'] = str(desc)[:600]
+        lang_out = _LANG_MAP.get((doc.get('language') or '').lower().strip(), '')
         if lang_out:
             item['lang'] = lang_out
         items.append(item)
     return items
 
 
+def _docs_from(data):
+    return (data.get('response') or {}).get('docs') or []
+
+
+def _cleantitle(s):
+    return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+
 def load(url='', params=None):
     if not url:
         return [
-            {'title': 'Kollektionen', 'url': '__collections__',
-             'next_func': 'load', 'is_playable': False},
+            {'title': 'Kollektionen', 'url': _S_COLLECTIONS, 'next_func': 'load',   'is_playable': False},
+            {'title': 'Genre',        'url': _S_GENRES,       'next_func': 'load',   'is_playable': False},
+            {'title': 'Jahre',        'url': _S_JAHRE,        'next_func': 'load',   'is_playable': False},
+            {'title': 'Neu',          'url': _S_NEU + '1',    'next_func': 'load',   'is_playable': False},
+            {'title': 'Suche',        'url': '',              'next_func': 'search', 'is_playable': False},
         ]
 
-    if url == '__collections__':
+    if url == _S_COLLECTIONS:
         return [
-            {'title': name, 'url': _coll_url(coll_id),
-             'next_func': 'load', 'is_playable': False}
+            {'title': name, 'url': _S_COLL + coll_id, 'next_func': 'load', 'is_playable': False}
             for name, coll_id in _COLLECTIONS.items()
         ]
 
-    data = _get_json(url)
-    docs = (data.get('response') or {}).get('docs') or []
-    return _parse_docs(docs)
+    if url.startswith(_S_COLL):
+        coll_id = url[len(_S_COLL):]
+        data = _get_json(_adv_url('collection%3A' + quote_plus(coll_id)))
+        return _parse_docs(_docs_from(data))
+
+    if url == _S_GENRES:
+        return [
+            {'title': g, 'url': _S_GENRE + g, 'next_func': 'load', 'is_playable': False}
+            for g in _GENRES
+        ]
+
+    if url.startswith(_S_GENRE):
+        genre = url[len(_S_GENRE):]
+        data = _get_json(_adv_url(quote_plus(genre)))
+        return _parse_docs(_docs_from(data))
+
+    if url == _S_JAHRE:
+        year = datetime.datetime.now().year
+        return [
+            {'title': str(y), 'url': _S_JAHR + str(y), 'next_func': 'load', 'is_playable': False}
+            for y in range(year, 1919, -1)
+        ]
+
+    if url.startswith(_S_JAHR):
+        year = url[len(_S_JAHR):]
+        data = _get_json(_adv_url('year%3A' + quote_plus(year)))
+        return _parse_docs(_docs_from(data))
+
+    if url.startswith(_S_NEU):
+        try:
+            page = int(url[len(_S_NEU):] or 1)
+        except ValueError:
+            page = 1
+        data  = _get_json(_adv_url('mediatype%3Amovies', sort='addeddate+desc', rows=_PAGE_NEU, page=page))
+        items = _parse_docs(_docs_from(data))
+        if len(items) == _PAGE_NEU:
+            items.append({
+                'title':       '[B]>>> Weiter[/B]',
+                'url':         _S_NEU + str(page + 1),
+                'next_func':   'load',
+                'is_playable': False,
+            })
+        return items
+
+    return []
 
 
-def get_hosters(url='', params=None):
-    html = _get(url)
-    m    = re.search(r'itemprop="embedUrl".*?href="([^"]+)"', html, re.S)
-    if not m:
+def get_hosters(url='', title='', year='', season=0, episode=0, imdb='', tmdb='', params=None):
+    if url:
+        identifier = url.rstrip('/').split('/')[-1]
+        embed = 'https://archive.org/embed/' + identifier
+        return [('Archive.org', embed, False, '', '')]
+
+    if not title:
         return []
-    embed = m.group(1)
-    if embed.startswith('//'):
-        embed = 'https:' + embed
-    name = 'YouTube' if 'youtube' in embed else 'Archive.org'
-    return [(name, embed, False, '', '')]
+
+    clean = _cleantitle(title)
+    years = [str(year), str(int(year or 0) + 1)] if year else ['']
+
+    def _search(yr):
+        q = quote_plus(title)
+        if yr:
+            q += '+AND+year%3A' + yr
+        data = _get_json(_adv_url(q, rows=20))
+        return _docs_from(data)
+
+    for yr in years:
+        for doc in _search(yr):
+            identifier = doc.get('identifier', '')
+            doc_title  = doc.get('title', '')
+            if not identifier or not doc_title:
+                continue
+            if clean in _cleantitle(doc_title) or _cleantitle(doc_title) in clean:
+                embed = 'https://archive.org/embed/' + identifier
+                return [('Archive.org', embed, False, '', '')]
+
+    return []
 
 
-def search(query='', params=None):
-    data = _get_json(_search_url(query))
-    docs = (data.get('response') or {}).get('docs') or []
-    return _parse_docs(docs)
+def search(query='', params=None, url=''):
+    if not query and isinstance(params, dict):
+        query = params.get('query') or params.get('keyword') or ''
+    if not query and isinstance(url, str) and url:
+        query = url
+    if not query:
+        try:
+            r = xbmcgui.Dialog().input('Internet Archive – Suche')
+            if r:
+                query = r.strip()
+        except Exception:
+            log.error()
+    if not query:
+        return []
+    data = _get_json(_adv_url(quote_plus(query)))
+    return _parse_docs(_docs_from(data))
 
 
 def get_details(url='', params=None):
-    if not url or '/details/' not in url:
+    if not url:
         return {}
     identifier = url.rstrip('/').split('/')[-1]
     try:
@@ -144,17 +237,17 @@ def get_details(url='', params=None):
         if not data:
             return {}
         result = {'poster': _thumb(identifier)}
-        meta   = data.get('metadata') or {}
-        desc   = meta.get('description')
+        meta = data.get('metadata') or {}
+        desc = meta.get('description')
         if desc:
             if isinstance(desc, list):
                 desc = desc[0]
             result['plot'] = str(desc)[:600]
         date = meta.get('date') or meta.get('year', '')
         if date:
-            m_year = re.search(r'(\d{4})', str(date))
-            if m_year:
-                result['year'] = m_year.group(1)
+            m = re.search(r'(\d{4})', str(date))
+            if m:
+                result['year'] = m.group(1)
         return result
     except Exception:
         log.error()
