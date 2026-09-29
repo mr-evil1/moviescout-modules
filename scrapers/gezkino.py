@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# 2026.09.29
+# IT('s) Possible 
 import re
 import base64
 import json
@@ -11,7 +13,7 @@ from datetime import datetime
 import xbmcaddon
 
 SITE_ID       = 'gezkino'
-SITE_NAME     = 'GEZ Kino'
+SITE_NAME     = 'GEZ KiNO'
 SITE_DOMAIN   = 'mediathekviewweb.de'
 TYPE          = 'movie'
 GLOBAL_SEARCH = True
@@ -450,15 +452,19 @@ def _get_local_movies(genre=None, letter=None, min_r=None, max_r=None, year_filt
 
 
 def load(url='', params=None):
-    _plot = '[B]Powered by ITS POSSIBLE[/B]'
+    _plot = '[B]MovieScout[/B]'
     
     if url == 'toggle_tv':
         current = _get_setting('hide_tv_films')
         _set_setting('hide_tv_films', not current)
-        import xbmc
-        xbmc.executebuiltin('Container.Refresh')
-        return []
-
+        url = ''
+        update_database_background()
+        try:
+            import xbmcgui
+            xbmcgui.Dialog().notification('GEZ KiNO', 'Synchronisierung gestartet...', xbmcgui.NOTIFICATION_INFO, 3000)
+        except Exception:
+            pass
+        url = ''
     if not url:
         hide_tv = _get_setting('hide_tv_films')
         switch_label = '[ [B]TV-Filme:[/B] [COLOR red]NEIN[/COLOR] ]' if hide_tv else '[ [B]TV-Filme:[/B] [COLOR green]JA[/COLOR] ]'
@@ -473,10 +479,6 @@ def load(url='', params=None):
             {'title': switch_label,                          'url': 'toggle_tv',    'plot': _plot, 'is_playable': False, 'next_func': 'load'},            
             {'title': '[B][ Datenbank aktualisieren ][/B]',   'url': 'sync',         'plot': _plot, 'is_playable': False, 'next_func': 'load'},
         ]
-
-    if url == 'sync':
-        update_database_background()
-        return []
 
     if url == 'all':
         return _get_local_movies()
@@ -531,6 +533,7 @@ def load(url='', params=None):
         return _get_local_movies(genre=url[6:])
 
     return []
+
 
 
 def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
