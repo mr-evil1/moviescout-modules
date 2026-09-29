@@ -315,11 +315,11 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
     if url and not url.startswith('__') and ('dr0pstream.com' in url or 'dropcdn' in url or 'meinecloud' in url):
         hostname = urlparse(url).hostname or ''
         hoster = re.sub(r'^www\.', '', hostname).split('.')[0].capitalize()
-        return [(hoster, url, False, 'HD', '')]
+        return [(hoster, url, False, 'HD', 'de')]
 
     if url and not url.startswith('__'):
         raw = _extract_hosters_film(url)
-        return [(name, hurl, False, qual, '') for name, hurl, qual in raw]
+        return [(name, hurl, False, qual, 'de') for name, hurl, qual in raw]
 
     page_url = _find_page_url(title, year)
     if not page_url:
@@ -337,12 +337,12 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
                 if ep_num == episode_i:
                     hostname = urlparse(link).hostname or ''
                     hoster = re.sub(r'^www\.', '', hostname).split('.')[0].capitalize()
-                    return [(hoster, link, False, 'HD', '')]
+                    return [(hoster, link, False, 'HD', 'de')]
         raw = _extract_hosters_film(page_url)
     else:
         raw = _extract_hosters_film(page_url)
 
-    return [(name, hurl, False, qual, '') for name, hurl, qual in raw]
+    return [(name, hurl, False, qual, 'de') for name, hurl, qual in raw]
 
 
 def _find_page_url(title, year=''):

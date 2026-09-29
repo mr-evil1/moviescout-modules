@@ -313,7 +313,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
         name    = entry[0]
         hurl    = entry[1]
         quality = entry[3] if len(entry) > 3 else 'HD'
-        result.append((name, hurl, False, quality, ''))
+        result.append((name, hurl, False, quality, 'de'))
     return result
 
 

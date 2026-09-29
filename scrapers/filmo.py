@@ -364,7 +364,16 @@ def _hosters_from_detail(sDetailUrl):
                 seen.add(sKey)
                 sUrl = _resolve_payload(sPayload, sCsrf, sess, sDetailUrl)
                 if sUrl:
-                    hosters.append([sName, sUrl, False, sQuality, sLang])
+                    _sl = sLang.upper()
+                    if _sl in ('EN', 'GB', 'US'):
+                        sLangCode = 'en'
+                    elif _sl in ('DE',):
+                        sLangCode = 'de'
+                    elif _sl:
+                        sLangCode = sLang.lower()
+                    else:
+                        sLangCode = 'unbekannt'
+                    hosters.append([sName, sUrl, False, sQuality, sLangCode])
             return hosters
     except Exception:
         log.error()
@@ -382,10 +391,7 @@ def _best_match(cards, title, year):
         if title_low in c['title'].lower():
             if not year_str or c.get('year', '') == year_str:
                 return c['url']
-    for c in cards:
-        if title_low in c['title'].lower():
-            return c['url']
-    return cards[0]['url'] if cards else ''
+    return ''
 
 
 def get_hosters(title='', year='', season=0, episode=0,
@@ -409,4 +415,10 @@ def get_hosters(title='', year='', season=0, episode=0,
     if not sDetailUrl:
         return []
     log.log('[Filmo] Detail: %s' % sDetailUrl)
+    if year:
+        det = get_details(sDetailUrl)
+        det_year = det.get('year', '')
+        if det_year and str(year) != det_year:
+            log.log('[Filmo] Jahr-Mismatch: gesucht=%s gefunden=%s – kein Ergebnis' % (year, det_year))
+            return []
     return _hosters_from_detail(sDetailUrl)

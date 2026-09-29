@@ -496,6 +496,18 @@ def _match_title(movie, clean_title, year, season):
     return clean_title in ec or ec in clean_title
 
 
+def _lang_from_release(sRelease):
+    rt = sRelease.upper().replace('-', '.')
+    parts = set(rt.split('.'))
+    if 'GERMAN' in rt or 'DEUTSCH' in rt:
+        return 'de'
+    if 'DL' in parts:
+        return 'de'
+    if 'OV' in parts or 'ENGLISH' in rt or 'ENG' in parts:
+        return 'en'
+    return 'unbekannt'
+
+
 def _streams_from_watch(data, season_i, episode_i):
     result = []
     hoster_count = {}
@@ -524,13 +536,15 @@ def _streams_from_watch(data, season_i, episode_i):
             continue
         hoster_count[key] = hoster_count.get(key, 0) + 1
         quality = 'HD'
+        sLang = 'unbekannt'
         if stream.get('release'):
             rel = str(stream['release']).upper()
             if 'CAM' in rel or 'TS' in rel:
                 quality = 'CAM'
             elif 'SD' in rel:
                 quality = 'SD'
-        result.append((hname.upper(), s_url, False, quality, 'de'))
+            sLang = _lang_from_release(stream['release'])
+        result.append((hname.upper(), s_url, False, quality, sLang))
     return result
 
 
@@ -549,7 +563,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
         media_type = 'tvseries' if season_i > 0 else 'movies'
         found_ids = set()
         result = []
-        lang_filters = [('2', True), ('3', True), ('2', False), ('', False)]
+        lang_filters = [('2', True), ('2', False)]
         for lang, with_type in lang_filters:
             params = 'order_by=new&page=1&keyword=%s' % quote(title)
             if lang:

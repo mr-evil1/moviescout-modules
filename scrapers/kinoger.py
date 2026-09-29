@@ -4,20 +4,20 @@ import ast
 from urllib.parse import quote
 from resources.lib import multiquest, log
 
-SITE_ID       = 'kinofun'
-SITE_NAME     = 'Kino Fun'
-SITE_DOMAIN   = 'kinoger.fun'
+SITE_ID       = 'kinoger'
+SITE_NAME     = 'KinoGer'
+SITE_DOMAIN   = 'kinoger.beer'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
 
 _UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
-_S_KINO    = '__kf_kino__'
-_S_MOVIES  = '__kf_movies__'
-_S_SERIES  = '__kf_series__'
-_S_GENRE   = '__kf_genre__'
-_S_SEASONS = '__kf_seasons__:'
-_S_EP      = '__kf_ep__:'
+_S_KINO    = '__kgb_kino__'
+_S_MOVIES  = '__kgb_movies__'
+_S_SERIES  = '__kgb_series__'
+_S_GENRE   = '__kgb_genre__'
+_S_SEASONS = '__kgb_seasons__:'
+_S_EP      = '__kgb_ep__:'
 
 _URL_KINO    = '/aktuelle-kinofilme-im-kino/'
 _URL_MOVIES  = '/kinofilme-online/'
@@ -161,14 +161,6 @@ def _get_genre_menu():
         full_url = href if href.startswith('http') else _base() + href
         items.append({'title': name, 'url': full_url,
                       'next_func': 'load', 'is_playable': False})
-    if not items:
-        for m in re.finditer(r'<li class=\"links\"><a href=\"(/main/[^\"]+)\"[^>]*>(.*?)</a>', html, re.S | re.I):
-            href = m.group(1)
-            name = re.sub(r'<[^>]+>', '', m.group(2)).strip()
-            if not name or any(s in href for s in skip):
-                continue
-            items.append({'title': name, 'url': _base() + href,
-                          'next_func': 'load', 'is_playable': False})
     return items
 
 
@@ -276,7 +268,7 @@ def _streams_from_datalinks(html):
             continue
         if not raw_url.startswith('http'):
             raw_url = _base() + raw_url
-        if 'meinecloud' in raw_url:
+        if 'meinecloud' in raw_url or 'youtube' in raw_url:
             continue
         hoster = re.sub(r'^www\.', '', (re.findall(r'//([^/]+)/', raw_url) or [SITE_NAME])[0])
         if 'supervideo' in hoster:
@@ -381,7 +373,8 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
         etitle = entry.get('title', '')
         eurl   = entry.get('url', '')
         entry_year = entry.get('year', '')
-        etitle_clean = re.sub(r'\s+(Film|Stream|Serie|Staffel\s*\d+)\s*$', '', etitle, flags=re.I)
+        etitle_clean = re.sub(r'\s*\*[^*]+\*\s*', '', etitle).strip()
+        etitle_clean = re.sub(r'\s+(Film|Stream|Serie|Staffel\s*\d+)\s*$', '', etitle_clean, flags=re.I)
         eclean  = _cleantitle(etitle_clean)
         if ct not in eclean and eclean not in ct:
             continue

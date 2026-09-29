@@ -63,9 +63,26 @@ def _cleantitle(s):
     return re.sub(r'[^a-z0-9]', '', s)
 
 
+def _lang_from_page(html):
+    m = re.search(r'(?:Sprache|Originalsprache|Language)[^:]*:\s*([^\n<]{2,30})', html, re.I)
+    if m:
+        val = m.group(1).strip().upper()
+        if 'DEUTSCH' in val or 'GERMAN' in val:
+            return 'de'
+        if 'ENGLISH' in val or 'ENGLISCH' in val:
+            return 'en'
+    title_m = re.search(r'<title[^>]*>([^<]+)</title>', html, re.I)
+    if title_m:
+        t = title_m.group(1).upper()
+        if 'ENGLISH' in t or '(EN)' in t:
+            return 'en'
+    return 'unbekannt'
+
+
 def _extract_hosters_from_page(page_url, season=0, episode=0):
     html    = _get(page_url, _base())
     quality = '1080p' if '1080' in html else '720p' if '720' in html else 'HD'
+    sLang   = _lang_from_page(html)
     result  = []
     if episode:
         m = re.search(
@@ -91,18 +108,24 @@ def _extract_hosters_from_page(page_url, season=0, episode=0):
                 host = 'GXPlayer'
         except Exception:
             host = 'Stream'
-        result.append(('%s | %s' % (host, quality), link, quality))
+        result.append(('%s | %s' % (host, quality), link, quality, sLang))
     return result
 
 
 def _find_page_url(title, year, season=0):
-    clean = _cleantitle(title)
-    html  = _get(_base() + '/index.php?do=search&subaction=search&story=%s' % quote_plus(title))
+    clean    = _cleantitle(title)
+    year_str = str(year or '')
+    html     = _get(_base() + '/index.php?do=search&subaction=search&story=%s' % quote_plus(title))
+    best     = ''
     for s_url, s_name in re.findall(
         r'<a[^>]*class="poster grid-item[^>]*href="([^"]+)"[^>]*>.*?alt="([^"]+)"', html, re.S
     ):
-        if clean in _cleantitle(s_name) or _cleantitle(s_name) in clean:
-            return s_url if s_url.startswith('http') else _base() + s_url
+        if clean not in _cleantitle(s_name) and _cleantitle(s_name) not in clean:
+            continue
+        abs_url = s_url if s_url.startswith('http') else _base() + s_url
+        if year_str and year_str not in s_name:
+            continue
+        return abs_url
     return ''
 
 
@@ -117,7 +140,7 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
         if not page_url:
             return []
         raw = _extract_hosters_from_page(page_url, season, episode)
-    return [(name, link, False, quality, '') for name, link, quality in raw]
+    return [(name, link, False, quality, lang) for name, link, quality, lang in raw]
 
 
 def get_episodes(url='', params=None):

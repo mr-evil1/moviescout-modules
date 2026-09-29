@@ -37,7 +37,13 @@ _TMDB_KEY   = ''
 def _lang_label(langs):
     if 'de' in langs: return ' (DE)'
     if 'en' in langs: return ' (EN)'
-    return ''
+    return ' (UNBEKANNT)'
+
+
+def _lang_code(langs):
+    if 'de' in langs: return 'de'
+    if 'en' in langs: return 'en'
+    return 'unbekannt'
 
 
 def _quality_label(tag):
@@ -491,9 +497,10 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
         from urllib.parse import urlparse
         _host   = re.sub(r'^www\.', '', urlparse(hurl).hostname or '')
         _hname  = _host.split('.')[0].capitalize() if _host else (m.get('name') or SITE_NAME)
-        name    = _hname + _lang_label(m.get('languages', []))
+        langs   = m.get('languages', [])
+        name    = _hname + _lang_label(langs)
         quality = _quality_label(m.get('tag', ''))
-        result.append((name, hurl, _is_direct(hurl), quality, ''))
+        result.append((name, hurl, _is_direct(hurl), quality, _lang_code(langs)))
     return result
 
 

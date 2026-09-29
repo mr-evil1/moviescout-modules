@@ -2,7 +2,7 @@
 import re
 import json
 import datetime
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote_plus
 import xbmcgui
 from resources.lib import multiquest, log
 
@@ -26,10 +26,33 @@ _COLLECTIONS = {
 }
 
 _GENRES = [
-    'Action', 'Adventure', 'Animation', 'Comedy', 'Crime',
-    'Documentary', 'Drama', 'Family', 'Fantasy', 'Film Noir',
-    'Horror', 'Musical', 'Mystery', 'Romance', 'Science Fiction',
-    'Short', 'Thriller', 'War', 'Western',
+    ('Horror',             'subject:"Horror"'),
+    ('Sci-Fi & Fantasy',   'subject:("Sci-Fi" OR "Science Fiction" OR "Fantasy")'),
+    ('Film Noir & Krimi',  'subject:("Film Noir" OR "Crime" OR "Mystery")'),
+    ('Komödie',            'subject:("Comedy" OR "Slapstick")'),
+    ('Drama',              'subject:"Drama"'),
+    ('Western',            'subject:"Western"'),
+    ('Action & Abenteuer', 'subject:("Action" OR "Adventure")'),
+    ('Stummfilme',         'subject:("Silent Film" OR "Silent")'),
+    ('Action',             'Action'),
+    ('Adventure',          'Adventure'),
+    ('Animation',          'Animation'),
+    ('Crime',              'Crime'),
+    ('Documentary',        'Documentary'),
+    ('Family',             'Family'),
+    ('Musical',            'Musical'),
+    ('Romance',            'Romance'),
+    ('Short',              'Short'),
+    ('Thriller',           'Thriller'),
+    ('War',                'War'),
+]
+
+_EPOCHS = [
+    ('Vor 1930 (Stummfilm-Ära)',           'year:[1000 TO 1929]'),
+    ('1930 – 1949 (Goldenes Zeitalter)',    'year:[1930 TO 1949]'),
+    ('1950 – 1969 (Klassiker & B-Movies)', 'year:[1950 TO 1969]'),
+    ('1970 – 1989',                         'year:[1970 TO 1989]'),
+    ('1990 – Heute',                        'year:[1990 TO 2030]'),
 ]
 
 _LANG_MAP = {
@@ -37,16 +60,20 @@ _LANG_MAP = {
     'eng': 'en', 'english': 'en',
 }
 
-_S_COLLECTIONS = '__ia_collections__'
-_S_COLL        = '__ia_coll__:'
-_S_GENRES      = '__ia_genres__'
-_S_GENRE       = '__ia_genre__:'
-_S_JAHRE       = '__ia_jahre__'
-_S_JAHR        = '__ia_jahr__:'
-_S_NEU         = '__ia_neu__:'
+_S_COLLECTIONS   = '__ia_collections__'
+_S_COLL          = '__ia_coll__:'
+_S_GENRES        = '__ia_genres__'
+_S_GENRE         = '__ia_genre__:'
+_S_GENRE_ADV     = '__ia_genre_adv__:'
+_S_JAHRE         = '__ia_jahre__'
+_S_JAHR          = '__ia_jahr__:'
+_S_EPOCHEN       = '__ia_epochen__'
+_S_EPOCHE        = '__ia_epoche__:'
+_S_NEU           = '__ia_neu__:'
+_S_DE            = '__ia_de__:'
+_S_POPULAR       = '__ia_popular__:'
 
-_ROWS     = 500
-_PAGE_NEU = 50
+_PAGE = 50
 
 
 def _base():
@@ -67,11 +94,14 @@ def _thumb(identifier):
     return 'https://archive.org/services/img/' + identifier
 
 
-def _adv_url(q, sort='', rows=_ROWS, page=1):
+def _adv_url(q, sort='downloads+desc', rows=_PAGE, page=1, raw=False):
+    if raw:
+        q_part = quote_plus(q)
+    else:
+        q_part = q + '+AND+mediatype%3Amovies'
     url = (
-        _base() + '/advancedsearch.php?q=' + q +
-        '+AND+mediatype%3Amovies'
-        '&fl[]=description&fl[]=identifier&fl[]=language&fl[]=title&fl[]=year'
+        _base() + '/advancedsearch.php?q=' + q_part +
+        '&fl[]=identifier&fl[]=language&fl[]=title&fl[]=year'
         '&rows=' + str(rows) + '&page=' + str(page) + '&output=json'
     )
     if sort:
@@ -97,10 +127,10 @@ def _parse_docs(docs):
         year = str(doc.get('year') or '')
         if len(year) == 4:
             item['year'] = year
-        desc = doc.get('description') or ''
-        if desc:
-            item['plot'] = str(desc)[:600]
-        lang_out = _LANG_MAP.get((doc.get('language') or '').lower().strip(), '')
+        lang = doc.get('language') or ''
+        if isinstance(lang, list):
+            lang = lang[0] if lang else ''
+        lang_out = _LANG_MAP.get(str(lang).lower().strip(), '')
         if lang_out:
             item['lang'] = lang_out
         items.append(item)
@@ -115,14 +145,31 @@ def _cleantitle(s):
     return re.sub(r'[^a-z0-9]', '', (s or '').lower())
 
 
+def _paged(url_prefix, q, sort='downloads+desc', page=1, raw=False):
+    data  = _get_json(_adv_url(q, sort=sort, rows=_PAGE, page=page, raw=raw))
+    docs  = _docs_from(data)
+    items = _parse_docs(docs)
+    if len(docs) == _PAGE:
+        items.append({
+            'title':       '[B]>>> Weiter[/B]',
+            'url':         url_prefix + str(page + 1),
+            'next_func':   'load',
+            'is_playable': False,
+        })
+    return items
+
+
 def load(url='', params=None):
     if not url:
         return [
-            {'title': 'Kollektionen', 'url': _S_COLLECTIONS, 'next_func': 'load',   'is_playable': False},
-            {'title': 'Genre',        'url': _S_GENRES,       'next_func': 'load',   'is_playable': False},
-            {'title': 'Jahre',        'url': _S_JAHRE,        'next_func': 'load',   'is_playable': False},
-            {'title': 'Neu',          'url': _S_NEU + '1',    'next_func': 'load',   'is_playable': False},
-            {'title': 'Suche',        'url': '',              'next_func': 'search', 'is_playable': False},
+            {'title': 'Kollektionen',   'url': _S_COLLECTIONS,   'next_func': 'load',   'is_playable': False},
+            {'title': 'Genre',          'url': _S_GENRES,         'next_func': 'load',   'is_playable': False},
+            {'title': 'Epoche / Jahr',  'url': _S_EPOCHEN,        'next_func': 'load',   'is_playable': False},
+            {'title': 'Jahre',          'url': _S_JAHRE,          'next_func': 'load',   'is_playable': False},
+            {'title': 'Deutsche Filme', 'url': _S_DE + '1',       'next_func': 'load',   'is_playable': False},
+            {'title': 'Beliebte Filme', 'url': _S_POPULAR + '1',  'next_func': 'load',   'is_playable': False},
+            {'title': 'Neu',            'url': _S_NEU + '1',      'next_func': 'load',   'is_playable': False},
+            {'title': 'Suche',          'url': '',                'next_func': 'search', 'is_playable': False},
         ]
 
     if url == _S_COLLECTIONS:
@@ -133,19 +180,54 @@ def load(url='', params=None):
 
     if url.startswith(_S_COLL):
         coll_id = url[len(_S_COLL):]
-        data = _get_json(_adv_url('collection%3A' + quote_plus(coll_id)))
-        return _parse_docs(_docs_from(data))
+        return _paged(_S_COLL + coll_id + ':', 'collection:' + coll_id + ' AND mediatype:movies', raw=True)
 
     if url == _S_GENRES:
-        return [
-            {'title': g, 'url': _S_GENRE + g, 'next_func': 'load', 'is_playable': False}
-            for g in _GENRES
-        ]
+        items = []
+        for label, filter_str in _GENRES:
+            prefix = _S_GENRE_ADV if ('"' in filter_str or '(' in filter_str) else _S_GENRE
+            items.append({'title': label, 'url': prefix + label, 'next_func': 'load', 'is_playable': False})
+        return items
+
+    if url.startswith(_S_GENRE_ADV):
+        label      = url[len(_S_GENRE_ADV):]
+        filter_str = next((f for l, f in _GENRES if l == label), None)
+        if not filter_str:
+            return []
+        page_key = _S_GENRE_ADV + label + ':'
+        try:
+            page = int(url.split(':')[-1])
+        except (ValueError, IndexError):
+            page = 1
+        q = 'mediatype:movies AND ' + filter_str
+        return _paged(page_key, q, page=page, raw=True)
 
     if url.startswith(_S_GENRE):
-        genre = url[len(_S_GENRE):]
-        data = _get_json(_adv_url(quote_plus(genre)))
-        return _parse_docs(_docs_from(data))
+        parts = url[len(_S_GENRE):].rsplit(':', 1)
+        genre = parts[0]
+        try:
+            page = int(parts[1])
+        except (ValueError, IndexError):
+            page = 1
+        return _paged(_S_GENRE + genre + ':', genre + ' AND mediatype:movies', page=page, raw=True)
+
+    if url == _S_EPOCHEN:
+        return [
+            {'title': label, 'url': _S_EPOCHE + quote_plus(filter_str), 'next_func': 'load', 'is_playable': False}
+            for label, filter_str in _EPOCHS
+        ]
+
+    if url.startswith(_S_EPOCHE):
+        raw_part   = url[len(_S_EPOCHE):]
+        parts      = raw_part.rsplit(':', 1)
+        filter_str = unquote_plus(parts[0])
+        try:
+            page = int(parts[1])
+        except (ValueError, IndexError):
+            page = 1
+        page_key = _S_EPOCHE + parts[0] + ':'
+        q = 'mediatype:movies AND ' + filter_str
+        return _paged(page_key, q, page=page, raw=True)
 
     if url == _S_JAHRE:
         year = datetime.datetime.now().year
@@ -155,25 +237,36 @@ def load(url='', params=None):
         ]
 
     if url.startswith(_S_JAHR):
-        year = url[len(_S_JAHR):]
-        data = _get_json(_adv_url('year%3A' + quote_plus(year)))
-        return _parse_docs(_docs_from(data))
+        parts = url[len(_S_JAHR):].rsplit(':', 1)
+        year  = parts[0]
+        try:
+            page = int(parts[1])
+        except (ValueError, IndexError):
+            page = 1
+        q = 'mediatype:movies AND year:' + year
+        return _paged(_S_JAHR + year + ':', q, page=page, raw=True)
 
     if url.startswith(_S_NEU):
         try:
             page = int(url[len(_S_NEU):] or 1)
         except ValueError:
             page = 1
-        data  = _get_json(_adv_url('mediatype%3Amovies', sort='addeddate+desc', rows=_PAGE_NEU, page=page))
-        items = _parse_docs(_docs_from(data))
-        if len(items) == _PAGE_NEU:
-            items.append({
-                'title':       '[B]>>> Weiter[/B]',
-                'url':         _S_NEU + str(page + 1),
-                'next_func':   'load',
-                'is_playable': False,
-            })
-        return items
+        return _paged(_S_NEU, 'mediatype:movies', sort='addeddate+desc', page=page, raw=True)
+
+    if url.startswith(_S_DE):
+        try:
+            page = int(url[len(_S_DE):] or 1)
+        except ValueError:
+            page = 1
+        q = 'mediatype:movies AND language:("German" OR "Deutsch" OR "ger" OR "de")'
+        return _paged(_S_DE, q, page=page, raw=True)
+
+    if url.startswith(_S_POPULAR):
+        try:
+            page = int(url[len(_S_POPULAR):] or 1)
+        except ValueError:
+            page = 1
+        return _paged(_S_POPULAR, 'mediatype:movies', page=page, raw=True)
 
     return []
 
@@ -194,7 +287,7 @@ def get_hosters(url='', title='', year='', season=0, episode=0, imdb='', tmdb=''
         q = quote_plus(title)
         if yr:
             q += '+AND+year%3A' + yr
-        data = _get_json(_adv_url(q, rows=20))
+        data = _get_json(_adv_url(q, sort='', rows=20))
         return _docs_from(data)
 
     for yr in years:
@@ -224,31 +317,5 @@ def search(query='', params=None, url=''):
             log.error()
     if not query:
         return []
-    data = _get_json(_adv_url(quote_plus(query)))
+    data = _get_json(_adv_url(quote_plus(query), sort=''))
     return _parse_docs(_docs_from(data))
-
-
-def get_details(url='', params=None):
-    if not url:
-        return {}
-    identifier = url.rstrip('/').split('/')[-1]
-    try:
-        data = _get_json(_base() + '/metadata/' + identifier)
-        if not data:
-            return {}
-        result = {'poster': _thumb(identifier)}
-        meta = data.get('metadata') or {}
-        desc = meta.get('description')
-        if desc:
-            if isinstance(desc, list):
-                desc = desc[0]
-            result['plot'] = str(desc)[:600]
-        date = meta.get('date') or meta.get('year', '')
-        if date:
-            m = re.search(r'(\d{4})', str(date))
-            if m:
-                result['year'] = m.group(1)
-        return result
-    except Exception:
-        log.error()
-        return {}

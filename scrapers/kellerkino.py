@@ -41,8 +41,9 @@ _RE_HOME_NEW_CARD = re.compile(r'<a class="dmt-home-cinema-more-card" href="([^"
 _RE_HOME_SEC_LBL  = re.compile(r'<h2>\s*([^<]+?)\s*</h2>')
 _RE_HOME_THEME_TB = re.compile(r'<button[^>]*data-dmt-home-theme-tab="([^"]+)"[^>]*data-dmt-home-theme-label="([^"]+)"', re.S)
 _RE_HOME_THEME_PN = re.compile(r'id="dmt-home-theme-panel-([^"]+)"')
-_RE_HOSTER_LABEL  = re.compile(r'data-nfo-player-label="([^"]*)"')
-_RE_HOSTER_FRAME  = re.compile(r'<iframe[^>]+src="(https?://[^"]+)"')
+_RE_HOSTER_LABEL   = re.compile(r'data-nfo-player-label="([^"]*)"')
+_RE_HOSTER_FRAME   = re.compile(r'<iframe[^>]+src="(https?://[^"]+)"')
+_RE_RELEASE_TITLE  = re.compile(r'data-nfo-release-title="([^"]*)"')
 _RE_DETAIL_PLOT   = re.compile(r'<div[^>]+class="[^"]*(?:entry-content|sinopsis|plot|description)[^"]*"[^>]*>(.*?)</div>', re.S)
 
 _UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -272,6 +273,18 @@ def search(query='', url='', params=None):
     return _parse_cards(sHtml)
 
 
+def _lang_from_release(sRelease):
+    rt = sRelease.upper().replace('-', '.')
+    parts = set(rt.split('.'))
+    if 'GERMAN' in rt or 'DEUTSCH' in rt:
+        return 'de'
+    if 'DL' in parts:
+        return 'de'
+    if 'OV' in parts or 'ENGLISH' in rt or 'ENG' in parts:
+        return 'en'
+    return 'unbekannt'
+
+
 def _extract_hosters_from_url(sDetailUrl):
     sHtml = _get(sDetailUrl)
     if not sHtml:
@@ -286,7 +299,9 @@ def _extract_hosters_from_url(sDetailUrl):
             continue
         mLabel = _RE_HOSTER_LABEL.search(sPanel)
         sLabel = unescape(mLabel.group(1)).strip() if mLabel else 'Hoster'
-        hosters.append([sLabel, sHosterUrl, False, '720', ''])
+        mRelease = _RE_RELEASE_TITLE.search(sPanel)
+        sLang = _lang_from_release(mRelease.group(1)) if mRelease else 'unbekannt'
+        hosters.append([sLabel, sHosterUrl, False, '720', sLang])
     return hosters
 
 
@@ -320,16 +335,13 @@ def _best_match(cards, title, year):
     year_str  = str(year) if year else ''
     for c in cards:
         if c['title'].lower().strip() == title_low:
-            if not year_str or not c['year'] or c['year'] == year_str:
+            if not year_str or c['year'] == year_str:
                 return c['url']
     for c in cards:
         if title_low in c['title'].lower():
-            if not year_str or not c['year'] or c['year'] == year_str:
+            if not year_str or c['year'] == year_str:
                 return c['url']
-    for c in cards:
-        if title_low in c['title'].lower():
-            return c['url']
-    return cards[0]['url'] if cards else ''
+    return ''
 
 
 def get_hosters(title='', year='', season=0, episode=0,

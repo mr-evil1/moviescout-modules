@@ -158,12 +158,18 @@ def _search_ajax(query):
 
 
 def _find_page_url(title, year, season=0):
-    results = _search_ajax(title)
+    year_str = str(year or '')
+    results  = _search_ajax(title)
+    best     = ''
     for item in results:
         if _cleantitle(item['title']) not in _cleantitle(title) and _cleantitle(title) not in _cleantitle(item['title']):
             continue
+        if year_str and season == 0 and item.get('year', '') and item['year'] != year_str:
+            if not best:
+                best = item['url']
+            continue
         return item['url']
-    return ''
+    return best
 
 
 def get_details(url='', params=None):
@@ -312,9 +318,9 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
     for name, hurl, quality in raw:
         if re.search(r'meinecloud\.click/', hurl, re.I):
             for sub_name, sub_url, sub_qual in _resolve_sirius(hurl):
-                result.append((sub_name, sub_url, False, sub_qual, ''))
+                result.append((sub_name, sub_url, False, sub_qual, 'de'))
         else:
-            result.append((name, hurl, False, quality, ''))
+            result.append((name, hurl, False, quality, 'de'))
     return result
 
 

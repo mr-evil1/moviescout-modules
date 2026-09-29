@@ -152,7 +152,7 @@ def _find_movie_id(title, year):
         if year and str((m.get('releaseDate') or '')[:4]) != year:
             continue
         return str(m.get('id', ''))
-    return str(results[0].get('id', ''))
+    return ''
 
 
 def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
