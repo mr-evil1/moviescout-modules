@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
 import re
 import base64
-from urllib.parse import quote, urlparse, urlencode
+from urllib.parse import urlencode
 from resources.lib import multiquest, log
 from resources.lib.control import getSetting
 
@@ -37,13 +36,15 @@ _HDR_XHR = {
     'sec-fetch-dest': 'empty',
 }
 
+_LANG_LABEL = {'de': 'Deutsch', 'en': 'Englisch'}
+
 
 def _base():
     return 'https://' + SITE_DOMAIN
 
 
-def _tmdb(path, params=None):
-    p = {'api_key': _TMDB_KEY, 'language': 'de-DE'}
+def _tmdb(path, params=None, language='de-DE'):
+    p = {'api_key': _TMDB_KEY, 'language': language}
     if params:
         p.update(params)
     try:
@@ -112,17 +113,24 @@ def _poster(path):
     return _TMDB_IMG + path
 
 
-def _quality(text):
-    t = (text or '').upper()
-    if '2160' in t or '4K' in t: return '4K'
-    if '1080' in t: return '1080p'
-    if '720' in t:  return '720p'
-    if '480' in t:  return '480p'
-    return 'HD'
-
-
 def _cleantitle(s):
     return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+
+def _norm_lang(code):
+    c = (code or '').strip().lower().replace('_', '-').split('-')[0]
+    return {'ger': 'de', 'deu': 'de', 'eng': 'en'}.get(c, c[:2])
+
+
+def _audio_langs(m3u8):
+    """Liest die tatsaechlich vorhandenen Audiospuren aus der Master-Playlist."""
+    langs = set()
+    for line in m3u8.splitlines():
+        if line.startswith('#EXT-X-MEDIA') and 'TYPE=AUDIO' in line:
+            m = re.search(r'LANGUAGE="([^"]+)"', line)
+            if m:
+                langs.add(_norm_lang(m.group(1)))
+    return langs
 
 
 def _item_from_tmdb(m, is_series=False):
@@ -197,19 +205,37 @@ def _get_seasons(tmdb_id):
 
 def _get_episodes(encoded):
     tmdb_id, season = encoded.rsplit('|', 1)
-    data = _tmdb('/tv/%s/season/%s' % (tmdb_id, season))
+    path = '/tv/%s/season/%s' % (tmdb_id, season)
+    data = _tmdb(path)
     if not data:
         return []
     poster = _poster(data.get('poster_path', ''))
-    items  = []
+
+
+    en_map = None
+    def _en(ep_num):
+        nonlocal en_map
+        if en_map is None:
+            en = _tmdb(path, language='en-US') or {}
+            en_map = {e.get('episode_number'): e for e in en.get('episodes', [])}
+        return en_map.get(ep_num) or {}
+
+    items = []
     for ep in data.get('episodes', []):
         ep_num   = ep.get('episode_number', 0)
-        ep_title = ep.get('name', '') or ('Episode %d' % ep_num)
+        ep_title = ep.get('name', '')
+        plot     = ep.get('overview', '')
+        if not plot or not ep_title or ep_title == 'Episode %d' % ep_num:
+            en = _en(ep_num)
+            plot     = plot or en.get('overview', '')
+            if not ep_title or ep_title == 'Episode %d' % ep_num:
+                ep_title = en.get('name', '') or ep_title
+        ep_title = ep_title or ('Episode %d' % ep_num)
         ep_still = _poster(ep.get('still_path', '')) or poster
         items.append({
             'title':   'S%02dE%02d \u2013 %s' % (int(season), ep_num, ep_title),
             'url':     '%s|s%s|e%d' % (tmdb_id, season, ep_num),
-            'poster':  ep_still, 'plot': ep.get('overview', ''),
+            'poster':  ep_still, 'plot': plot,
             'mediatype': 'episode', 'is_playable': True, 'next_func': 'get_hosters',
             'season': int(season), 'episode': ep_num,
         })
@@ -239,23 +265,24 @@ def _resolve(tmdb_id, season=0, episode=0):
 
         log.log('[vixstream] _resolve: src=%s' % src)
 
-        result = []
-        for lang in ('de', 'en'):
+        entries = []
+        sigs    = {}
+
+
+        for lang in ('en', 'de'):
             embed_path = src + ('&' if '?' in src else '?') + 'lang=' + lang
-            full_embed  = embed_path if embed_path.startswith('http') else _base() + embed_path
+            full_embed = embed_path if embed_path.startswith('http') else _base() + embed_path
 
             embed_html = _vix_get(sess, embed_path, _base() + page_url)
             if not embed_html:
-                log.log('[vixstream] _resolve: kein embed_html fuer lang=%s path=%s' % (lang, embed_path))
+                log.log('[vixstream] _resolve: kein embed_html fuer lang=%s' % lang)
                 continue
 
             video_id_m = re.search(r'/embed/([^/?&#]+)', full_embed)
             if not video_id_m:
                 log.log('[vixstream] _resolve: video_id nicht gefunden in %s' % full_embed)
                 continue
-            video_id = video_id_m.group(1)
-
-            embed_url = '%s/embed/%s' % (_base(), video_id)
+            embed_url = '%s/embed/%s' % (_base(), video_id_m.group(1))
 
             _mp = r'window\.masterPlaylist[\s\S]{0,600}?'
             mp_token_m   = re.search(_mp + r"""['"]token['"]\s*:\s*['"]([^'"]+)['"]""", embed_html)
@@ -266,18 +293,30 @@ def _resolve(tmdb_id, season=0, episode=0):
                 log.log('[vixstream] _resolve: window.masterPlaylist nicht gefunden (lang=%s)' % lang)
                 continue
 
-            mp_token   = mp_token_m.group(1)
-            mp_expires = mp_expires_m.group(1)
-            mp_base    = mp_url_m.group(1)
-
+            mp_base = mp_url_m.group(1)
             sep = '&' if '?' in mp_base else '?'
             playlist_url = '%s%stoken=%s&expires=%s&h=1&lang=%s' % (
-                mp_base, sep, mp_token, mp_expires, lang
+                mp_base, sep, mp_token_m.group(1), mp_expires_m.group(1), lang
             )
 
             m3u8 = _vix_playlist(sess, playlist_url, embed_url)
             if not m3u8 or not m3u8.startswith('#EXTM3U'):
                 log.log('[vixstream] _resolve: ungueltige M3U8 fuer lang=%s' % lang)
+                continue
+
+            tracks = _audio_langs(m3u8)
+            log.log('[vixstream] _resolve: lang=%s audio-tracks=%s' % (lang, sorted(tracks)))
+
+
+            if tracks and lang not in tracks:
+                log.log('[vixstream] _resolve: keine %s-Spur, ueberspringe' % lang)
+                continue
+
+
+            sig = re.sub(r'lang=\w+', '', re.sub(r'token=[^&\s"]+|expires=\d+', '', m3u8))
+            if not tracks and sig in sigs:
+                entries[sigs[sig]]['label'] = 'VixCloud'
+                log.log('[vixstream] _resolve: %s identisch, Sprache unbekannt' % lang)
                 continue
 
             final = '%s|%s' % (playlist_url, urlencode({
@@ -288,10 +327,14 @@ def _resolve(tmdb_id, season=0, episode=0):
                 'sec-fetch-mode': 'cors',
                 'sec-fetch-dest': 'empty',
             }))
-            label = 'Deutsch' if lang == 'de' else 'Englisch'
-            result.append(('VixCloud (%s)' % label, final, True, '720p', lang))
+            sigs[sig] = len(entries)
+            entries.append({
+                'lang': lang, 'url': final,
+                'label': 'VixCloud (%s)' % _LANG_LABEL.get(lang, lang.upper()),
+            })
 
-    return result
+    entries.sort(key=lambda e: 0 if e['lang'] == 'de' else 1)
+    return [(e['label'], e['url'], True, '720p', e['lang']) for e in entries]
 
 
 def _movies_menu():
@@ -356,13 +399,15 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
     if url and not url.startswith('__'):
         return _resolve(url, season=season_i, episode=episode_i)
 
+    if tmdb:
+        return _resolve(str(tmdb), season=season_i, episode=episode_i)
+
     if imdb:
         data = _tmdb('/find/%s' % imdb, {'external_source': 'imdb_id'})
         if data:
             results = data.get('movie_results') or data.get('tv_results') or []
             if results:
-                tmdb_id = str(results[0].get('id', ''))
-                return _resolve(tmdb_id, season=season_i, episode=episode_i)
+                return _resolve(str(results[0].get('id', '')), season=season_i, episode=episode_i)
 
     if title:
         media = 'tv' if season_i else 'movie'
