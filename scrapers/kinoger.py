@@ -3,6 +3,7 @@ import re
 import ast
 from urllib.parse import quote
 from resources.lib import multiquest, log
+from resources.lib.control import keyboard
 
 SITE_ID       = 'kinoger'
 SITE_NAME     = 'KinoGer'
@@ -16,6 +17,7 @@ _S_KINO    = '__kgb_kino__'
 _S_MOVIES  = '__kgb_movies__'
 _S_SERIES  = '__kgb_series__'
 _S_GENRE   = '__kgb_genre__'
+_S_SEARCH  = '__kgb_search__'
 _S_SEASONS = '__kgb_seasons__:'
 _S_EP      = '__kgb_ep__:'
 
@@ -315,6 +317,7 @@ def load(url='', params=None):
             {'title': 'Filme',    'url': _S_MOVIES,  'next_func': 'load', 'is_playable': False},
             {'title': 'Serien',   'url': _S_SERIES,  'next_func': 'load', 'is_playable': False},
             {'title': 'Genre',    'url': _S_GENRE,   'next_func': 'load', 'is_playable': False},
+            {'title': '[B]Suche[/B]', 'url': _S_SEARCH, 'next_func': 'load', 'is_playable': False},
         ]
     if url == _S_KINO:    return _parse_entries(_get(_base() + _URL_KINO))
     if url == _S_MOVIES:
@@ -322,6 +325,13 @@ def load(url='', params=None):
         return [i for i in _items if i.get('mediatype') != 'tvshow']
     if url == _S_SERIES:  return _parse_entries(_get(_base() + _URL_SERIES), is_series_page=True)
     if url == _S_GENRE:   return _get_genre_menu()
+    if url == _S_SEARCH:
+        kb = keyboard('', 'KinoGer Suche')
+        kb.doModal()
+        if not kb.isConfirmed():
+            return []
+        query = kb.getText().strip()
+        return search(query=query) if query else []
     if url.startswith(_S_SEASONS): return _get_seasons(url[len(_S_SEASONS):])
     if url.startswith(_S_EP):      return _get_episodes(url[len(_S_EP):])
     is_series = 'serienstream' in url or '/serie/' in url
