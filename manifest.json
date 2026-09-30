@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_update": "2026-09-30T11:58:41Z",
+  "last_update": "2026-09-30T18:17:34Z",
   "scrapers": [
     {
       "name": "animetoast",
@@ -161,6 +161,13 @@
       "version": "1.0",
       "domain": "",
       "description": "Netzkino Scraper",
+      "last_modified": "2026-09-30"
+    },
+    {
+      "name": "plexfree",
+      "version": "1.0",
+      "domain": "",
+      "description": "Plexfree Scraper",
       "last_modified": "2026-09-30"
     },
     {
