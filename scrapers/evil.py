@@ -2,7 +2,7 @@ import re
 import time
 import random
 import string
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from resources.lib import multiquest, log
 
 _UA  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -64,22 +64,98 @@ _SKIP_DOMAINS = (
     'googletagmanager.com', 'google-analytics.com', 'googlesyndication.com',
     'doubleclick.net', 'googleapis.com', 'gstatic.com',
     'facebook.com', 'twitter.com', 'instagram.com',
+    'unpkg.com', 'jsdelivr.net', 'cdnjs.cloudflare.com', 'cdn.jsdelivr.net',
+    'fonts.googleapis.com', 'fonts.gstatic.com',
+)
+
+_STATIC_EXTS = (
+    '.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp',
+    '.woff', '.woff2', '.ttf', '.eot', '.ico',
+)
+
+_AD_DOMAINS = (
+    'tagivi.com', 'popads.net', 'propellerads.com', 'adsterra.com',
+    'onclickads.net', 'exoclick.com', 'juicyads.com', 'clickadu.com',
+    'hilltopads.net', 'adcash.com', 'popcash.net', 'trafficjunky.net',
+    'aarems.org', 'directyp.org', 'gzupload.com', 'demper.org',
+    'interlinecustomroofingllc.com',
 )
 
 _STREAM_PATTERNS = [
-    r'(https?://[^\s"\'<>]+\.m3u8(?:[^\s"\'<>]*)?)',
-    r'(?:file|wurl|src|source)\s*[=:]\s*["\']?(https?://[^\s"\'<>,\]]+)',
-    r'(https?://[^\s"\'<>]+\.mp4(?:[^\s"\'<>]*)?)',
+    r'(https?://[^\s"\'<>\\]+\.m3u8(?:[^\s"\'<>\\]*)?)',
+    r'(https?://[^\s"\'<>\\]+\.(?:mp4|mpd|webm|mkv)(?:[^\s"\'<>\\]*)?)',
+    r'(?:file|wurl|hls|source)["\']?\s*[=:]\s*["\'](https?://[^\s"\'<>,\]\\]+)',
+    r'<(?:source|video)[^>]*\bsrc=["\'](https?://[^"\']+)',
 ]
+
+
+def _is_ad(u):
+    u = (u or '').lower()
+    return any(d in u for d in _AD_DOMAINS)
+
+
+def _clean_html(html):
+    html = re.sub(r'<!--.*?-->', '', html, flags=re.S)
+    html = re.sub(r'<script\b[^>]*\bsrc\s*=[^>]*>\s*</script>', '', html, flags=re.S | re.I)
+    return html.replace('\\/', '/')
+
+
+def _prepare(html):
+    html = _clean_html(html)
+    if 'eval(function(p,a,c,k' in html:
+        html = html + '\n' + _unpack_packer(html)
+    return html
 
 
 def _find_stream(text):
     for pat in _STREAM_PATTERNS:
-        m = re.search(pat, text)
-        if m:
-            u = (m.group(2) if m.lastindex and m.lastindex >= 2 else m.group(1)).strip('"\'')
-            if u and u.startswith('http') and not any(d in u.lower() for d in _SKIP_DOMAINS):
-                return u
+        for m in re.finditer(pat, text):
+            u = m.group(1).strip('"\'')
+            if not u or not u.startswith('http'):
+                continue
+            low = u.lower()
+            if _is_ad(low) or any(d in low for d in _SKIP_DOMAINS):
+                continue
+            u_clean = low.split('?')[0].split('#')[0]
+            if any(u_clean.endswith(e) for e in _STATIC_EXTS):
+                continue
+            return u
+    return None
+
+
+def _origin(url):
+    p = urlparse(url)
+    return p.scheme + '://' + p.netloc + '/'
+
+
+def _with_headers(stream, referer, ua=None):
+    if '|' in stream:
+        return stream
+    return stream + '|Referer=' + referer + '&User-Agent=' + (ua or _MOB).replace(' ', '%20')
+
+
+def _extract_iframes(html, base):
+    out = []
+    for m in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
+        link = urljoin(base, m.group(1).strip())
+        if link.startswith('http') and not _is_ad(link):
+            out.append(link)
+    return out
+
+
+def _scan(url, referer, depth=0):
+    html = _get(url, referer, ua=_UA)
+    if not html:
+        return None
+    html = _prepare(html)
+    su = _find_stream(html)
+    if su:
+        return su, url
+    if depth < 2:
+        for frame in _extract_iframes(html, url):
+            found = _scan(frame, url, depth + 1)
+            if found:
+                return found
     return None
 
 
@@ -404,15 +480,111 @@ def _resolve_dood(url):
 
 def _resolve_generic(url):
     try:
-        html = _get(url, url)
-        if not html:
-            return url, False
-        html = re.sub(r'<!--.*?-->', '', html, flags=re.S)
-        if 'eval(function(p,a,c,k' in html:
-            html = _unpack_packer(html)
-        su = _find_stream(html)
-        if su:
-            return su, True
+        found = _scan(url, url)
+        if found:
+            su, page = found
+            return _with_headers(su, _origin(page)), True
+    except Exception:
+        log.error()
+    return url, False
+
+
+def _aes_decrypt_hex(hex_str):
+    raw = bytes.fromhex(hex_str.strip())
+    try:
+        from Cryptodome.Cipher import AES
+    except Exception:
+        from Crypto.Cipher import AES
+    data = AES.new(b'kiemtienmua911ca', AES.MODE_CBC, b'1234567890oiuytr').decrypt(raw)
+    pad = data[-1]
+    if 0 < pad <= 16:
+        data = data[:-pad]
+    return data.decode('utf-8', 'ignore')
+
+
+def _pick_stream(data):
+    if isinstance(data, dict):
+        for k in ('source', 'hls', 'cf', 'file', 'url', 'stream', 'streaming_url', 'sx'):
+            v = data.get(k)
+            if isinstance(v, str) and v.startswith('http') and not _is_ad(v):
+                return v
+        for v in data.values():
+            r = _pick_stream(v)
+            if r:
+                return r
+    elif isinstance(data, list):
+        for v in data:
+            r = _pick_stream(v)
+            if r:
+                return r
+    return None
+
+
+_XOR_KEY = 'G7#kP!2qZxV9mRwL'
+
+
+def _xor_decode(token):
+    import base64
+    try:
+        raw = base64.b64decode(token.split('~', 1)[1])
+        out = bytes(c ^ ord(_XOR_KEY[i % len(_XOR_KEY)]) for i, c in enumerate(raw))
+        return out.decode('utf-8', 'ignore')
+    except Exception:
+        return ''
+
+
+def _resolve_gupload(url):
+    import json as _json
+    try:
+        p = urlparse(url)
+        base = p.scheme + '://' + p.netloc
+        code = p.path.rstrip('/').split('/')[-1]
+        candidates = [base + '/e/' + code, url]
+        for page in candidates:
+            html = _get(page, 'https://moflix-stream.xyz/', ua=_UA)
+            if not html:
+                continue
+            html = html.replace('\\/', '/')
+            for tok in re.findall(r'[0-9a-f]{8}~[A-Za-z0-9+/=]{16,}', html):
+                txt = _xor_decode(tok)
+                if not txt.startswith('{') or 'videoUrl' not in txt:
+                    continue
+                try:
+                    su = _json.loads(txt).get('videoUrl') or ''
+                except Exception:
+                    su = ''
+                if su.startswith('//'):
+                    su = 'https:' + su
+                if su.startswith('http') and not _is_ad(su):
+                    return _with_headers(su, base + '/'), True
+        return _with_headers('%s/data/e/hls/%s/720p.m3u8' % (base, code), base + '/'), True
+    except Exception:
+        log.error()
+    return url, False
+
+
+_MOFLIX_HOSTS = ('gupload.', 'moflix-stream.', 'moflix.upns.', 'moflix.rpmplay.', 'upns.xyz', 'rpmplay.')
+
+
+def _resolve_moflix(url):
+    import json as _json
+    try:
+        p = urlparse(url)
+        base = p.scheme + '://' + p.netloc
+        code = (p.fragment or p.path.rstrip('/').split('/')[-1]).split('&')[0]
+        found = _scan(url, 'https://moflix-stream.xyz/')
+        if found:
+            su, page = found
+            return _with_headers(su, base + '/'), True
+        if code:
+            api = '%s/api/v1/video?id=%s&w=1920&h=1080&r=moflix-stream.xyz' % (base, code)
+            txt = (_get(api, url, ua=_UA) or '').strip()
+            if txt:
+                if not txt.startswith('{') and not txt.startswith('['):
+                    txt = _aes_decrypt_hex(txt)
+                su = _pick_stream(_json.loads(txt))
+                if su:
+                    return _with_headers(su, base + '/'), True
     except Exception:
         log.error()
     return url, False
@@ -526,7 +698,7 @@ _DOOD_HOSTS    = ('dood.', 'doodstream.')
 
 _DIRECT_EXTS = ('.mp4', '.mkv', '.m3u8', '.ts', '.avi', '.mov', '.mpd')
 
-def resolve(url):
+def _resolve_core(url):
     try:
         u = url.lower()
         p = u.split('?')[0]
@@ -558,10 +730,21 @@ def resolve(url):
             return _resolve_dood(url)
         if 'vidmoly.' in u:
             return _resolve_vidmoly(url)
+        if 'gupload.' in u:
+            return _resolve_gupload(url)
+        if any(h in u for h in _MOFLIX_HOSTS):
+            return _resolve_moflix(url)
         return _resolve_generic(url)
     except Exception:
         log.error()
     return url, False
+
+
+def resolve(url):
+    su, ok = _resolve_core(url)
+    if ok and _is_ad(su.split('|')[0]):
+        return url, False
+    return su, ok
 
 
 _TRIGGER = 'meinecloud.click'
