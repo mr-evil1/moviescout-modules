@@ -64,19 +64,23 @@ def _cleantitle(s):
 
 
 def _lang_from_page(html):
-    m = re.search(r'(?:Sprache|Originalsprache|Language)[^:]*:\s*([^\n<]{2,30})', html, re.I)
+    html = html or ''
+    m = re.search(r'itemprop=["\']inLanguage["\'][^>]*content=["\']([^"\']*)["\']', html, re.I)
+    if not m:
+        m = re.search(r'content=["\']([^"\']*)["\'][^>]*itemprop=["\']inLanguage["\']', html, re.I)
     if m:
-        val = m.group(1).strip().upper()
-        if 'DEUTSCH' in val or 'GERMAN' in val:
+        val = m.group(1).strip().lower()
+        if val.startswith('de') or 'deutsch' in val or 'german' in val:
             return 'de'
-        if 'ENGLISH' in val or 'ENGLISCH' in val:
+        if val.startswith('en') or 'engl' in val:
             return 'en'
+        if val:
+            return val[:2]
     title_m = re.search(r'<title[^>]*>([^<]+)</title>', html, re.I)
-    if title_m:
-        t = title_m.group(1).upper()
-        if 'ENGLISH' in t or '(EN)' in t:
-            return 'en'
-    return 'unbekannt'
+    title = title_m.group(1).upper() if title_m else ''
+    if re.search(r'ENGLISH|ENGLISCH|\(EN\)|\bENG\b|\bOV\b|ORIGINALTON', title):
+        return 'en'
+    return 'de'
 
 
 def _extract_hosters_from_page(page_url, season=0, episode=0):
