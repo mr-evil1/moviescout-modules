@@ -116,21 +116,34 @@ def _extract_hosters_from_page(page_url, season=0, episode=0):
     return result
 
 
+_SEASON_RX = re.compile(r'[\s\-\u2013:,]*(?:staffel|season)\s*0*(\d+)\s*$', re.I)
+
+
 def _find_page_url(title, year, season=0):
     clean    = _cleantitle(title)
     year_str = str(year or '')
     html     = _get(_base() + '/index.php?do=search&subaction=search&story=%s' % quote_plus(title))
-    best     = ''
-    for s_url, s_name in re.findall(
+    entries  = re.findall(
         r'<a[^>]*class="poster grid-item[^>]*href="([^"]+)"[^>]*>.*?alt="([^"]+)"', html, re.S
-    ):
-        if clean not in _cleantitle(s_name) and _cleantitle(s_name) not in clean:
-            continue
+    )
+    fallback = ''
+    for s_url, s_name in entries:
         abs_url = s_url if s_url.startswith('http') else _base() + s_url
-        if year_str and year_str not in s_name:
+        name    = s_name.strip()
+        sm      = _SEASON_RX.search(name)
+        base    = _cleantitle(_SEASON_RX.sub('', name))
+        if clean not in base and base not in clean:
+            continue
+        if season:
+            if sm and int(sm.group(1)) == int(season):
+                return abs_url
+            if not sm and int(season) <= 1 and not fallback:
+                fallback = abs_url
+            continue
+        if year_str and year_str not in name:
             continue
         return abs_url
-    return ''
+    return fallback
 
 
 def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
