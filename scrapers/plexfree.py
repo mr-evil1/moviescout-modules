@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # MovieScout - Plex Free Movies & Series
-# 2026.09.30-15
+# 2026.10.01
 # IT('s) Possible
 import html, json, time, uuid, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,11 +14,13 @@ TYPE          = 'both'
 GLOBAL_SEARCH = True
 STREAMLG      = 'LG0'
 
+PAGE_SIZE = 20
+
 _UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36'
 _CLIENT_ID = str(uuid.uuid4())
-_PLEX_MIN_INTERVAL, _PLEX_429_WAIT = 0.45, 5.0
-_PLEX_TIMEOUT = 15
-_WEB_MIN_INTERVAL, _WEB_TIMEOUT, _WEB_WORKERS = 0.08, 4, 10
+_PLEX_MIN_INTERVAL, _PLEX_429_WAIT = 0.2, 5.0
+_PLEX_TIMEOUT = 10
+_WEB_MIN_INTERVAL, _WEB_TIMEOUT, _WEB_WORKERS = 0.08, 4, 15
 
 def _dbg(msg):
     try:
@@ -33,10 +35,121 @@ def _mask(token):
     return f'{t[:4]}...({len(t)})' if t else 'LEER'
 
 
+def _is_german_only():
+    try:
+        import xbmcaddon
+        addon = xbmcaddon.Addon('plugin.video.moviescout')
+        val = addon.getSetting('general.german_only')
+        if val == '' or val is None:
+            val = addon.getSetting('filter_german')
+        return str(val).lower() == 'true'
+    except Exception:
+        return False
+
+
 _PLEX_RATE_LOCK, _PLEX_LAST_REQUEST = threading.Lock(), 0.0
 _GUEST_TOKEN_LOCK, _GUEST_TOKEN = threading.Lock(), None
 _WEB_RATE_LOCK, _WEB_LAST_REQUEST = threading.Lock(), 0.0
 _WEB_META_LOCK, _WEB_META_CACHE = threading.Lock(), {}
+_AUDIO_CACHE_LOCK, _AUDIO_CACHE = threading.Lock(), {}
+
+
+def _fetch_missing_metadata(item):
+    if not item or not isinstance(item, dict):
+        return item
+    rating_key = str(item.get('ratingKey') or (item.get('key', '').split('/')[-1] if item.get('key') else ''))
+    if not rating_key:
+        return item
+    full_data = plex_api_get(f"/library/metadata/{rating_key}")
+    if full_data:
+        metas = metadata_objects(full_data)
+        if metas and isinstance(metas[0], dict):
+            item['Media'] = metas[0].get('Media') or []
+    return item
+
+
+def _prefetch_audio_metadata(items):
+    if not _is_german_only() or not items:
+        return
+    items_to_fetch = []
+    for item in items:
+        if isinstance(item, dict):
+            rk = str(item.get('ratingKey') or (item.get('key', '').split('/')[-1] if item.get('key') else ''))
+            if rk:
+                with _AUDIO_CACHE_LOCK:
+                    if rk in _AUDIO_CACHE:
+                        continue
+            items_to_fetch.append(item)
+            
+    if items_to_fetch:
+        with ThreadPoolExecutor(max_workers=_WEB_WORKERS) as executor:
+            list(executor.map(_fetch_missing_metadata, items_to_fetch))
+
+
+def _has_german_audio(item):
+    if not _is_german_only():
+        return True
+    if not item or not isinstance(item, dict):
+        return False
+
+    if 'MediaContainer' in item:
+        metas = metadata_objects(item)
+        if metas:
+            item = metas[0]
+        else:
+            return False
+
+    rating_key = str(item.get('ratingKey') or (item.get('key', '').split('/')[-1] if item.get('key') else ''))
+    if rating_key:
+        with _AUDIO_CACHE_LOCK:
+            if rating_key in _AUDIO_CACHE:
+                return _AUDIO_CACHE[rating_key]
+
+    media_list = item.get('Media') or []
+    if not media_list and rating_key:
+        full_data = plex_api_get(f"/library/metadata/{rating_key}")
+        if full_data:
+            metas = metadata_objects(full_data)
+            if metas and isinstance(metas[0], dict):
+                item = metas[0]
+                media_list = item.get('Media') or []
+
+    if isinstance(media_list, dict):
+        media_list = [media_list]
+
+    found_audio = False
+    has_german = False
+
+    for media in media_list:
+        if not isinstance(media, dict):
+            continue
+        parts = media.get('Part') or []
+        if isinstance(parts, dict):
+            parts = [parts]
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            streams = part.get('Stream') or []
+            if isinstance(streams, dict):
+                streams = [streams]
+            for stream in streams:
+                if not isinstance(stream, dict):
+                    continue
+                if str(stream.get('streamType')) == '2':
+                    found_audio = True
+                    lang_code = str(stream.get('languageCode') or '').lower()
+                    lang = str(stream.get('language') or '').lower()
+                    display = str(stream.get('displayTitle') or '').lower()
+
+                    if lang_code in ('ger', 'deu', 'de') or 'deutsch' in lang or 'german' in lang or 'deutsch' in display:
+                        has_german = True
+
+    res = has_german if found_audio else False
+
+    if rating_key:
+        with _AUDIO_CACHE_LOCK:
+            _AUDIO_CACHE[rating_key] = res
+    return res
 
 
 def _plex_wait():
@@ -326,6 +439,9 @@ def _format_plex_item(item, token):
     if not item or not isinstance(item, dict):
         return None
     
+    if not _has_german_audio(item):
+        return None
+    
     rating_key = item.get('ratingKey') or (item.get('key', '').split('/')[-1] if item.get('key') else None)
     if not rating_key:
         return None
@@ -613,12 +729,17 @@ def load(url='', params=None):
         return items
 
     if url.startswith('hub_key||'):
-        key = url.split('||', 1)[1]
-        data = plex_api_get(key)
+        parts = url.split('||')
+        key = parts[1]
+        offset = int(parts[2]) if len(parts) > 2 else 0
+        data = plex_api_get(key, params={
+            'X-Plex-Container-Start': offset,
+            'X-Plex-Container-Size': PAGE_SIZE
+        })
         results = []
         seen_keys = set()
-        
         meta_list = _extract_all_metadata(data)
+        _prefetch_audio_metadata(meta_list)
         _prefetch_german_summaries(meta_list)
         for meta in meta_list:
             rk = meta.get('ratingKey') or (meta.get('key', '').split('/')[-1] if meta.get('key') else None)
@@ -627,30 +748,47 @@ def load(url='', params=None):
                 parsed = _format_plex_item(meta, token)
                 if parsed:
                     results.append(parsed)
+        
+        mc = (data or {}).get('MediaContainer', {}) if isinstance(data, dict) else {}
+        total = int(mc.get('totalSize') or mc.get('size') or 0)
+
+        has_more_from_plex = total > offset + PAGE_SIZE
+        if _is_german_only():
+            has_more_from_plex = len(meta_list) == PAGE_SIZE and total > offset + len(meta_list)
+
+        if has_more_from_plex:
+            next_offset = offset + PAGE_SIZE
+            results.append({
+                'title': f'[ Weiter \u2192 (ab Eintrag {next_offset + 1}) ]',
+                'url': f'hub_key||{key}||{next_offset}',
+                'plot': f'N\u00e4chste Einträge laden',
+                'is_playable': False,
+                'next_func': 'load'
+            })
         return results
 
     if url.startswith('show_seasons||'):
         rating_key = url.split('||', 1)[1]
         data = plex_api_get(f"/library/metadata/{rating_key}/children")
         results = []
-        for meta in metadata_objects(data):
+        meta_list = metadata_objects(data)
+        if not meta_list:
+            data_leaves = plex_api_get(f"/library/metadata/{rating_key}/allLeaves")
+            meta_list = metadata_objects(data_leaves)
+        _prefetch_audio_metadata(meta_list)
+        for meta in meta_list:
             parsed = _format_plex_item(meta, token)
             if parsed:
                 results.append(parsed)
-
-        if not results:
-            data_leaves = plex_api_get(f"/library/metadata/{rating_key}/allLeaves")
-            for meta in metadata_objects(data_leaves):
-                parsed = _format_plex_item(meta, token)
-                if parsed:
-                    results.append(parsed)
         return results
 
     if url.startswith('season_episodes||'):
         rating_key = url.split('||', 1)[1]
         data = plex_api_get(f"/library/metadata/{rating_key}/children")
         results = []
-        for meta in metadata_objects(data):
+        meta_list = metadata_objects(data)
+        _prefetch_audio_metadata(meta_list)
+        for meta in meta_list:
             parsed = _format_plex_item(meta, token)
             if parsed:
                 results.append(parsed)
@@ -688,6 +826,7 @@ def search(query='', params=None):
             _dbg(f'search(): {ep} ohne Daten')
             continue
         metas = _extract_all_metadata(data)
+        _prefetch_audio_metadata(metas)
         _prefetch_german_summaries(metas)
         if not metas:
             try:
@@ -800,16 +939,20 @@ def _movie_manifests(metadata_id):
     if not token:
         return []
     data = plex_api_get(f"/library/metadata/{metadata_id}")
+    if not data:
+        return []
+    if _is_german_only() and not _has_german_audio(data):
+        _dbg(f'_movie_manifests {metadata_id}: kein deutsches Audio, gefiltert (_is_german_only=True)')
+        return []
     manifests = []
-    if data:
-        for item in metadata_objects(data):
-            for media in (item.get('Media') or []):
-                if isinstance(media, dict):
-                    for part in (media.get('Part') or []):
-                        if isinstance(part, dict):
-                            key = part.get('key')
-                            if key:
-                                manifests.append(key if key.startswith('http') else f"https://vod.provider.plex.tv{key}?X-Plex-Token={token}")
+    for item in metadata_objects(data):
+        for media in (item.get('Media') or []):
+            if isinstance(media, dict):
+                for part in (media.get('Part') or []):
+                    if isinstance(part, dict):
+                        key = part.get('key')
+                        if key:
+                            manifests.append(key if key.startswith('http') else f"https://vod.provider.plex.tv{key}?X-Plex-Token={token}")
     return manifests
 
 
