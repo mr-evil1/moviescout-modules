@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# 2026.09.29
 # IT('s) Possible 
+# 2026.10.02
 import re
 import base64
 import json
@@ -26,8 +26,8 @@ _MIN_DURATION = 4680
 _TERMS = ['Spielfilm', 'Spielfilme', 'Spielfilm-Highlights', 'Filme', 'Kino - Filme', 'Filme in der ARD']
 
 _SKIP = [
-    'audiodeskription', 'audio description', 'hörfilm', 'deskription', 'barrierefrei', 'ad version',
-    '(englisch)', '(französisch)','(zho)', '(originalversion mit untertitel)', '(mit untertitel)', '(originalversion)'
+    'audiodeskription', 'audio description', 'hörfilm', 'deskription', 'barrierefrei', 'ad version', 'gebärdensprache',
+    '(englisch)', '(französisch)', '(zho)', '(jpn)', '(originalversion mit untertitel)', '(mit untertitel)', '(originalversion)'
 ]
 _SKIP_CHANNELS = ['kika', 'arte.fr', 'zdf-tivi']
 
@@ -452,12 +452,9 @@ def _get_local_movies(genre=None, letter=None, min_r=None, max_r=None, year_filt
 
 
 def load(url='', params=None):
-    _plot = '[B]MovieScout[/B]'
-    
     if url == 'toggle_tv':
         current = _get_setting('hide_tv_films')
         _set_setting('hide_tv_films', not current)
-        url = ''
         update_database_background()
         try:
             import xbmcgui
@@ -465,19 +462,75 @@ def load(url='', params=None):
         except Exception:
             pass
         url = ''
+        
     if not url:
         hide_tv = _get_setting('hide_tv_films')
         switch_label = '[ [B]TV-Filme:[/B] [COLOR red]NEIN[/COLOR] ]' if hide_tv else '[ [B]TV-Filme:[/B] [COLOR green]JA[/COLOR] ]'
         
         return [
-            {'title': '[ Alle Spielfilme ]',                 'url': 'all',          'plot': _plot, 'is_playable': False, 'next_func': 'load'},
-            {'title': '[ Filme A - Z ]',                     'url': 'az',           'plot': _plot, 'is_playable': False, 'next_func': 'load'},            
-            {'title': '[ Neu hinzugefügt ]',                 'url': 'new',          'plot': _plot, 'is_playable': False, 'next_func': 'load'},
-            {'title': '[ Nach Bewertung sortiert ]',       'url': 'ratings',      'plot': _plot, 'is_playable': False, 'next_func': 'load'},
-            {'title': '[ Nach Jahren sortiert ]',          'url': 'years',        'plot': _plot, 'is_playable': False, 'next_func': 'load'},
-            {'title': '[ Nach Genres sortiert ]',          'url': 'genres',       'plot': _plot, 'is_playable': False, 'next_func': 'load'},
-            {'title': switch_label,                          'url': 'toggle_tv',    'plot': _plot, 'is_playable': False, 'next_func': 'load'},            
-            {'title': '[B][ Datenbank aktualisieren ][/B]',   'url': 'sync',         'plot': _plot, 'is_playable': False, 'next_func': 'load'},
+            {
+                'title': '[ Alle Spielfilme ]',
+                'url': 'all',
+                'plot': '[B]GEZ KiNO – Alle Spielfilme[/B]\n\nDurchstöbere die vollständige Liste aller verfügbaren Spielfilme und Kinoproduktionen aus den Mediatheken.',
+                'is_playable': False,
+                'next_func': 'load'
+            },
+            {
+                'title': '[ Filme A - Z ]',
+                'url': 'az',
+                'plot': '[B]Alphabetische Sortierung[/B]\n\nFinde deine gewünschten Filme schnell und übersichtlich sortiert nach Anfangsbuchstaben (A–Z und Sonderzeichen).',
+                'is_playable': False,
+                'next_func': 'load'
+            },            
+            {
+                'title': '[ Neu hinzugefügt ]',
+                'url': 'new',
+                'plot': '[B]Frisch eingetroffen[/B]\n\nEntdecke die neuesten Spielfilm-Uploads aus den Mediatheken, sortiert nach Aktualität (die neuesten zuerst).',
+                'is_playable': False,
+                'next_func': 'load'
+            },
+            {
+                'title': '[ Nach Bewertung sortiert ]',
+                'url': 'ratings',
+                'plot': '[B]Top-Filme nach IMDb-Bewertung[/B]\n\nFinde gezielt die am besten bewerteten Filme, unterteilt in verschiedene Qualitäts- und Bewertungsstufen.',
+                'is_playable': False,
+                'next_func': 'load'
+            },
+            {
+                'title': '[ Nach Jahren sortiert ]',
+                'url': 'years',
+                'plot': '[B]Chronologische Auswahl[/B]\n\nWähle gezielt ein bestimmtes Produktionsjahr aus, um Film-Highlights aus vergangenen Jahrzehnten oder aktuellen Jahren zu finden.',
+                'is_playable': False,
+                'next_func': 'load'
+            },
+            {
+                'title': '[ Nach Genres sortiert ]',
+                'url': 'genres',
+                'plot': '[B]Film-Genres[/B]\n\nFiltere das Angebot nach deinen Lieblings-Kategorien wie Komödie, Drama, Krimi, Thriller, Sci-Fi oder Dokumentarfilm.',
+                'is_playable': False,
+                'next_func': 'load'
+            },
+            {
+                'title': '[ Suche nach ]',
+                'url': 'search',
+                'plot': '[B]Gezielte Suche[/B]\n\nStarte eine Direktsuche nach Filmtiteln, Regisseuren oder Schauspielern.',
+                'is_playable': False,
+                'next_func': 'do_search'
+            },                   
+            {
+                'title': switch_label,
+                'url': 'toggle_tv',
+                'plot': '[B]Filter: Klassische TV-Filme[/B]\n\nSchalte ein oder aus, ob klassische Fernsehfilme und TV-Produktionen in den Listen angezeigt werden sollen.',
+                'is_playable': False,
+                'next_func': 'load'
+            },    
+            {
+                'title': '[B][ Datenbank aktualisieren ][/B]',
+                'url': 'sync',
+                'plot': '[B]Metadaten & Inhalte aktualisieren[/B]\n\nStartet den Hintergrund-Abgleich, um neue Filme von MediathekViewWeb einzulesen und mit TMDb-Daten zu verknüpfen.',
+                'is_playable': False,
+                'next_func': 'load'
+            },
         ]
 
     if url == 'all':
@@ -489,7 +542,7 @@ def load(url='', params=None):
     if url == 'az':
         letters = ['#'] + [chr(i) for i in range(65, 91)]
         return [
-            {'title': l, 'url': f'letter={l}', 'is_playable': False, 'next_func': 'load'}
+            {'title': l, 'url': f'letter={l}', 'plot': f'[B]Filme mit Anfangsbuchstabe: {l}[/B]\n\nZeigt alle Spielfilme, deren Titel mit "{l}" beginnen.', 'is_playable': False, 'next_func': 'load'}
             for l in letters
         ]
 
@@ -499,7 +552,7 @@ def load(url='', params=None):
     if url == 'ratings':
         ranges = [(9, 10), (8, 9), (7, 8), (6, 7), (5, 6), (4, 5), (3, 4), (2, 3), (1, 2), (0, 1)]
         return [
-            {'title': f'Bewertung {mn}.0 - {mx}.0', 'url': f'rating={mn}-{mx}', 'is_playable': False, 'next_func': 'load'}
+            {'title': f'Bewertung {mn}.0 - {mx}.0', 'url': f'rating={mn}-{mx}', 'plot': f'[B]Bewertungskategorie: {mn}.0 bis {mx}.0 Sterne[/B]\n\nFilme mit einer TMDb-Wertung in diesem Bereich.', 'is_playable': False, 'next_func': 'load'}
             for mn, mx in ranges
         ]
         
@@ -513,7 +566,7 @@ def load(url='', params=None):
                 rows = conn.execute("SELECT DISTINCT year FROM film_list WHERE year != '' ORDER BY year DESC").fetchall()
                 years = [r[0] for r in rows if r[0] and str(r[0]).isdigit() and int(r[0]) > 1900]
             return [
-                {'title': f'Jahr {y}', 'url': f'year={y}', 'is_playable': False, 'next_func': 'load'}
+                {'title': f'Jahr {y}', 'url': f'year={y}', 'plot': f'[B]Produktionsjahr {y}[/B]\n\nZeigt alle verfügbaren Spielfilme aus dem Jahr {y}.', 'is_playable': False, 'next_func': 'load'}
                 for y in years
             ]
         except Exception:
@@ -525,7 +578,7 @@ def load(url='', params=None):
     if url == 'genres':
         genres = sorted(list(set(_GENRES_MAP.values()))) + ['Sonstige']
         return [
-            {'title': g, 'url': f'genre={g}', 'is_playable': False, 'next_func': 'load'}
+            {'title': g, 'url': f'genre={g}', 'plot': f'[B]Genre: {g}[/B]\n\nZeigt alle Filme aus der Kategorie {g}.', 'is_playable': False, 'next_func': 'load'}
             for g in genres
         ]
 
@@ -567,6 +620,14 @@ def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url=''
 
 def search(query='', params=None):
     return _get_local_movies(search_str=query)
+
+
+def do_search(url='', params=None):
+    import xbmcgui
+    keyboard = xbmcgui.Dialog().input('Suche nach', type=xbmcgui.INPUT_ALPHANUM)
+    if keyboard:
+        return _get_local_movies(search_str=keyboard)
+    return []
 
 
 def get_details(url='', params=None):
