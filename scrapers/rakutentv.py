@@ -6,6 +6,8 @@ import os
 import time
 import uuid
 import urllib.error
+import urllib.request
+import base64
 from calendar import timegm as TGM
 from urllib.parse import urlencode, quote
 
@@ -32,7 +34,7 @@ _GIZMO    = 'https://gizmo.rakuten.tv/v3'
 _BASE_URL = 'https://www.rakuten.tv/'
 _PER_PAGE = 24
 _UA       = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-             '(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36')
+             '(KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36')
 _ATV_AGENT = ('Mozilla/5.0 (Linux; Android 11; SHIELD Android TV '
               'Build/RQ1A.210105.003; wv) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Version/4.0 Chrome/99.0.4844.88 '
@@ -50,6 +52,60 @@ _WEB_IDS_CACHE  = [None]
 _CHANNEL_CACHE  = [None]
 _GUIDE_CACHE    = [None]
 _PLATFORM_CACHE = [None]
+_SESSION_CACHE  = [None]
+
+
+def _get_session_id():
+    if not _SESSION_CACHE[0]:
+        _SESSION_CACHE[0] = str(uuid.uuid4())
+    return _SESSION_CACHE[0]
+
+
+def _accept_language():
+    locale_ = _detect_market()[1]
+    if locale_ == 'de':
+        return 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7'
+    return '%s,de-DE;q=0.9,de;q=0.8,en-US;q=0.7,en;q=0.6' % locale_
+
+
+def _web_stream_params():
+    market, locale_, class_id = _detect_market()
+    device_uid, _ = _get_web_ids()
+    return {
+        'classification_id':           class_id,
+        'device_identifier':           'web',
+        'device_stream_audio_quality': '2.0',
+        'device_stream_hdr_type':      'NONE',
+        'device_stream_video_quality': 'FHD',
+        'device_uid':                  device_uid,
+        'disable_dash_legacy_packages': 'false',
+        'locale':                      locale_,
+        'market_code':                 market,
+        'unique_session_id':           _get_session_id(),
+    }
+
+
+def _fetch_widevine_cert(license_url, ua):
+    try:
+        req = urllib.request.Request(
+            license_url,
+            data=b'\x08\x04',
+            headers={
+                'User-Agent': ua,
+                'Accept':     '*/*',
+                'Origin':     'https://www.rakuten.tv',
+                'Referer':    _BASE_URL,
+            },
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+        if raw:
+            log.log('[RakutenTV] Widevine-Zertifikat geladen (%d Bytes)' % len(raw))
+            return base64.b64encode(raw).decode('ascii')
+    except Exception as e:
+        log.log('[RakutenTV] Widevine-Zertifikat Fehler: %s' % e, log.LOGWARNING)
+    return ''
 
 
 def _detect_platform():
@@ -63,6 +119,25 @@ def _detect_platform():
     _PLATFORM_CACHE[0] = platform
     log.log('[RakutenTV] _detect_platform -> %s' % platform)
     return platform
+
+
+def _is_windows():
+    try:
+        return bool(xbmc.getCondVisibility('System.Platform.Windows'))
+    except Exception:
+        return False
+
+
+def _windows_vod_blocked():
+    if _is_windows():
+        xbmcgui.Dialog().ok(
+            'Rakuten TV',
+            'VOD/Serien sind auf Windows nicht verfügbar.\n'
+            'Rakuten TV sperrt Widevine-DRM für Windows.\n'
+            'Bitte Android verwenden.'
+        )
+        return True
+    return False
 
 
 def _detect_market():
@@ -193,7 +268,7 @@ def _headers(content_type=None, ua=None):
     h = {
         'User-Agent':      ua or _UA,
         'Accept':          'application/json, text/plain, */*',
-        'Accept-Language': 'de-DE,de;q=0.9',
+        'Accept-Language': _accept_language(),
         'Origin':          'https://www.rakuten.tv',
         'Referer':         'https://www.rakuten.tv/',
     }
@@ -226,8 +301,8 @@ def _post(path, body, extra=None, timeout=15, ua=None, replace_params=False):
     try:
         r = multiquest.post(
             url,
-            data=json.dumps(body),
-            headers=_headers('application/json; charset=utf-8', ua=ua),
+            data=json.dumps(body, separators=(',', ':')),
+            headers=_headers('application/json', ua=ua),
             timeout=timeout,
         )
         log.log('[RakutenTV] POST %d %s' % (r.status_code, path))
@@ -532,6 +607,8 @@ def load(url='', params=None):
 
 
 def showGenres(url='', params=None):
+    if _windows_vod_blocked():
+        return []
     is_movies   = (url == 'free-movies')
     target_type = 'Movie' if is_movies else 'TvShow'
     all_lists   = _garden_lists('avod-fast')
@@ -781,6 +858,8 @@ def _search_api(query, content_type, page=1):
 
 
 def search(query='', params=None, url=''):
+    if _windows_vod_blocked():
+        return []
     if isinstance(params, dict):
         query = query or params.get('query') or params.get('keyword') or ''
     if not query and isinstance(url, str) and url and url.lower() not in ('search', 'suche'):
@@ -811,6 +890,8 @@ def search(query='', params=None, url=''):
 
 
 def _scout_resolve(title, year, season, episode):
+    if _is_windows():
+        return ''
     if not title:
         return ''
     for ctype in ('Movie', 'TvShow'):
@@ -945,34 +1026,28 @@ def _request_stream(content_id, content_type, is_live=False, lang='DEU'):
         'subtitle_language':           'MIS',
         'support_closed_captions':     True,
     }
-    if is_live:
+    web_params = None
+    if is_live or not is_android:
         device_uid, publisher_provided_id = _get_web_ids()
         body.update({
+            'classification_id':       int(class_id),
             'device_serial':           'not implemented',
             'device_uid':              device_uid,
             'publisher_provided_id':   publisher_provided_id,
-            'player':                  'web:HLS-NONE:NONE',
+            'player':                  'web:HLS-NONE:NONE' if is_live else 'web:DASH-CENC:WVM',
             'device_make':             'chrome',
             'device_model':            'GENERIC',
             'device_year':             1970,
             'strict_video_quality':    False,
             'support_thumbnails':      True,
         })
-        extra_params = _params_pack()
+        web_params   = _web_stream_params()
+        extra_params = web_params
     else:
-        if is_android:
-            body.update({
-                'device_serial': _get_device_serial(),
-                'player':        'atvui40:DASH-CENC:WVM',
-            })
-        else:
-            device_uid, publisher_provided_id = _get_web_ids()
-            body.update({
-                'device_serial':         'not implemented',
-                'device_uid':            device_uid,
-                'publisher_provided_id': publisher_provided_id,
-                'player':                'web:DASH-CENC:WVM',
-            })
+        body.update({
+            'device_serial': _get_device_serial(),
+            'player':        'atvui40:DASH-CENC:WVM',
+        })
         extra_params = {
             'classification_id': class_id,
             'device_identifier': platform,
@@ -981,7 +1056,7 @@ def _request_stream(content_id, content_type, is_live=False, lang='DEU'):
     log.log('[RakutenTV] Stream request content_id=%s type=%s live=%s platform=%s'
             % (content_id, content_type, is_live, platform))
     post_ua     = None if is_live else vod_ua
-    vod_replace = not is_live
+    vod_replace = True
     data = _post('/avod/streamings', body, extra=extra_params, ua=post_ua, replace_params=vod_replace)
     if not data:
         return []
@@ -995,7 +1070,7 @@ def _request_stream(content_id, content_type, is_live=False, lang='DEU'):
         log.log('[RakutenTV] _request_stream keine Stream-Infos | keys=%s' % list(d.keys()), log.LOGWARNING)
         return []
     drm_ua       = vod_ua if not is_live else _UA
-    drm_ct       = 'application%%2Foctet-stream' if is_android else 'text%%2Fhtml'
+    drm_ct       = quote('application/octet-stream', safe='')
     results = []
     for si in stream_infos:
         surl  = si.get('url') or ''
@@ -1016,18 +1091,24 @@ def _request_stream(content_id, content_type, is_live=False, lang='DEU'):
         log.log('[RakutenTV] license_url=%s' % (drm_key[:80] if drm_key else 'none'))
         drm_info = {}
         if drm_key:
-            _hdrs = (
-                'User-Agent=%s&'
-                'Referer=%s&'
-                'Content-Type=%s'
-                % (
-                    quote(drm_ua, safe=''),
-                    quote(_BASE_URL, safe=''),
-                    drm_ct,
+            if is_android and not is_live:
+                _hdrs = (
+                    'User-Agent=%s&Referer=%s&Content-Type=%s'
+                    % (quote(drm_ua, safe=''), quote(_BASE_URL, safe=''), drm_ct)
                 )
-            )
+                cert = 'CAQ='
+            else:
+                _hdrs = (
+                    'User-Agent=%s&Referer=%s&Origin=%s'
+                    % (quote(drm_ua, safe=''), quote(_BASE_URL, safe=''),
+                       quote('https://www.rakuten.tv', safe=''))
+                )
+                if not is_live:
+                    _hdrs += '&Content-Type=%s' % drm_ct
+                cert = _fetch_widevine_cert(drm_key, drm_ua)
             drm_info['license_key'] = '%s|%s|R{SSM}|' % (drm_key, _hdrs)
-            drm_info['server_certificate'] = 'CAQ='
+            if cert:
+                drm_info['server_certificate'] = cert
         label  = 'RakutenTV'
         label += ' [%s]' % stype.upper() if stype else ''
         results.append([label, surl, drm_info, '', '', 'rakutentv'])
