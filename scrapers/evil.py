@@ -5,6 +5,9 @@ import string
 from urllib.parse import urlparse, urljoin
 from resources.lib import multiquest, log
 
+_VERSION = 'evil.py v2 (cf-retry+sub-resolve)'
+log.log('[evil] loaded: %s' % _VERSION)
+
 _UA  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 _MOB = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/143.0.0.0 Mobile Safari/537.36'
 
@@ -303,9 +306,34 @@ def _resolve_mixdrop(url):
     return url, False
 
 
+def _get_cf(url, referer=None):
+    h = {'User-Agent': _UA}
+    if referer:
+        h['Referer'] = referer
+    for attempt in range(3):
+        try:
+            r = multiquest.get(url, headers=h, timeout=20, use_cf=True)
+            r.raise_for_status()
+            if r.text:
+                return r.text
+        except Exception:
+            log.error()
+        if attempt < 2:
+            time.sleep(2)
+    return ''
+
+
 def _resolve_meinecloud(url):
+    def _sub(link):
+        if not link.startswith('http'):
+            link = 'https:' + link
+        su, ok = _resolve_core(link)
+        if ok:
+            return su, True
+        return link, False
+
     try:
-        html = _get(url, 'https://meinecloud.click/')
+        html = _get_cf(url, 'https://meinecloud.click/')
         if not html:
             return url, False
         html = re.sub(r'<!--.*?-->', '', html, flags=re.S)
@@ -314,7 +342,7 @@ def _resolve_meinecloud(url):
                 link = 'https:' + link
             if 'youtube' in link or 'meinecloud' in link:
                 continue
-            return link, False
+            return _sub(link)
         for attr in ('file', 'src', 'source'):
             m = re.search(r'["\']%s["\']\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']' % attr, html, re.I)
             if m:
@@ -328,7 +356,7 @@ def _resolve_meinecloud(url):
             if not iframe_url.startswith('http'):
                 iframe_url = 'https:' + iframe_url
             if 'meinecloud' not in iframe_url:
-                return iframe_url, False
+                return _sub(iframe_url)
             html2 = _get(iframe_url, url)
             if html2:
                 html2 = re.sub(r'<!--.*?-->', '', html2, flags=re.S)
@@ -337,7 +365,7 @@ def _resolve_meinecloud(url):
                         link = 'https:' + link
                     if 'youtube' in link or 'meinecloud' in link:
                         continue
-                    return link, False
+                    return _sub(link)
                 for attr in ('file', 'src', 'source'):
                     m = re.search(r'["\']%s["\']\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']' % attr, html2, re.I)
                     if m:
@@ -864,14 +892,16 @@ def _cloud_expand(raw_list):
     for name, hurl, quality in raw_list:
         if _TRIGGER in hurl:
             for sub_name, sub_url, sub_qual in _resolve_sirius(hurl):
-                result.append((sub_name, sub_url, False))
+                su, ok = _resolve_core(sub_url)
+                result.append((sub_name, su if ok else sub_url, ok))
         else:
-            result.append((name, hurl, False))
+            su, ok = _resolve_core(hurl)
+            result.append((name, su if ok else hurl, ok))
     return result
 
 
 def get_movie(imdb_id):
-    html = _get('https://meinecloud.click/movie/%s' % imdb_id, ua=_UA)
+    html = _get_cf('https://meinecloud.click/movie/%s' % imdb_id, 'https://meinecloud.click/')
     if not html:
         return []
     return _cloud_expand(_hosters_from_section(html))
@@ -879,10 +909,10 @@ def get_movie(imdb_id):
 
 def get_episode(imdb_id, season, episode):
     imdb_num = re.sub(r'[^0-9]', '', str(imdb_id))
-    html     = _get('https://meinecloud.click/serial/%s' % imdb_num, ua=_UA)
+    html     = _get_cf('https://meinecloud.click/serial/%s' % imdb_num, 'https://meinecloud.click/')
     raw      = _episode_hosters_from_html(html, season, episode)
     if not raw:
-        html = _get('https://meinecloud.click/serial/%s' % imdb_id, ua=_UA)
+        html = _get_cf('https://meinecloud.click/serial/%s' % imdb_id, 'https://meinecloud.click/')
         raw  = _episode_hosters_from_html(html, season, episode)
     return _cloud_expand(raw)
 
