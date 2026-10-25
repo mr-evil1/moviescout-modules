@@ -506,6 +506,81 @@ def _resolve_dood(url):
     return url, False
 
 
+def _resolve_devideosrc(url):
+    import json as _json
+    try:
+        p = urlparse(url)
+        imdb_id = p.path.rstrip('/').split('/')[-1]
+        content_type = 'movie' if '/movie/' in url else 'serial'
+        html = _get_cf(url, 'https://devideosrc.co/')
+        if not html:
+            return url, False
+        m = re.search(
+            r'token:\s*["\']([A-Za-z0-9+/=]+\.[0-9a-f]+)["\']',
+            html
+        )
+        if not m:
+            return url, False
+        token = m.group(1)
+        r = multiquest.post(
+            'https://devideosrc.co/api/embed-links',
+            headers={
+                'User-Agent':   _UA,
+                'Content-Type': 'application/json',
+                'Referer':      url,
+                'Origin':       'https://devideosrc.co',
+            },
+            json={'type': content_type, 'id': imdb_id, 'token': token},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if not data.get('ok') or not data.get('sources'):
+            return url, False
+        _BAD_RESULT_DOMAINS = ('test-videos.co.uk', 'sample-videos.com', 'file-examples.com')
+        for src in data['sources']:
+            embed_url = src.get('url', '')
+            src_name  = src.get('name', '').lower()
+            if not embed_url or _is_ad(embed_url):
+                continue
+            if 'voe' in src_name:
+                su, ok = _resolve_voesy(embed_url)
+            else:
+                su, ok = _resolve_core(embed_url)
+            if not ok or not su:
+                continue
+            base_su = su.split('|')[0]
+            if _is_ad(base_su) or any(d in base_su for d in _BAD_RESULT_DOMAINS):
+                continue
+            return su, True
+    except Exception:
+        log.error()
+    return url, False
+
+
+def _resolve_voesy(url):
+    try:
+        html = _get(url, url, ua=_UA)
+        if not html:
+            return url, False
+        if 'eval(function(p,a,c,k' in html:
+            html = _unpack_packer(html)
+        for pat in (
+            r"""['"]hls['"]\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]""",
+            r"""sources\s*[=:]\s*\{[^}]*['"](?:file|hls|src)['"]\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]""",
+            r"""['"]([^'"]+\.m3u8[^'"]*)['"]""",
+        ):
+            m = re.search(pat, html, re.I)
+            if m:
+                su = m.group(1)
+                if su.startswith('//'):
+                    su = 'https:' + su
+                return su + '|Referer=' + url + '&User-Agent=' + _MOB.replace(' ', '%20'), True
+    except Exception:
+        log.error()
+    return url, False
+
+
 def _resolve_generic(url):
     try:
         found = _scan(url, url)
@@ -742,7 +817,7 @@ def _resolve_core(url):
             return _resolve_dr0pstream(url)
         if 'supervideo.' in u:
             return _resolve_supervideo(url)
-        if 'mixdrop.' in u:
+        if 'mixdrop.' in u or 'mxdrop.' in u:
             return _resolve_mixdrop(url)
         if 'meinecloud.' in u:
             return _resolve_meinecloud(url)
@@ -756,6 +831,8 @@ def _resolve_core(url):
             return _resolve_playmate(url)
         if any(h in u for h in _DOOD_HOSTS):
             return _resolve_dood(url)
+        if 'devideosrc.' in u:
+            return _resolve_devideosrc(url)
         if 'vidmoly.' in u:
             return _resolve_vidmoly(url)
         if 'gupload.' in u:
