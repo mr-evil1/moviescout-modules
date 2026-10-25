@@ -1,3 +1,5 @@
+# joynfree.py
+# 2026.10.20
 import hashlib
 import json
 import re
@@ -17,6 +19,7 @@ STREAMLG      = 'LG0'
 _SUPPORTED = {'DE', 'AT', 'CH'}
 _COUNTRY   = None
 _TENANT    = None
+_FSK_MAP   = {}
 
 
 def _detect_country():
@@ -48,7 +51,7 @@ _UA        = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
 _SIG_KEY   = (
     'MzU0MzM3MzgzMzM4MzMzNjM1NDMzNzM4MzYzNDM2MzYzNTQzMz'
     'czODM2MzYzMzM4MzIzNjM1NDMzNzM4MzMzMDM2MzQzNTM5MzU0'
-    'MzM3MzgzMzM5MzMzNTMyMzQzNTQzMzczODM2MzUzMzM5MzU0Mz'
+    'MzM3MzgzMzM9MzMzNTMyMzQzNTQzMzczODM2MzUzMzM9MzU0Mz'
     'M3MzgzMzM4MzMzMjMzNDYzNTQzMzczODM2MzYzMzMzMzM0NDMz'
     'NDIzNTQzMzczODMzMzgzNjM2MzMzNQ=='
 )
@@ -261,10 +264,44 @@ def _folder(title, url, plot='', next_func='showEntries'):
             'is_playable': False, 'next_func': next_func}
 
 
+def _detect_fsk_from_node(m):
+    if not isinstance(m, dict):
+        return None
+    markings = m.get('markings') or []
+    if isinstance(markings, list):
+        for item in markings:
+            s = str(item).upper()
+            if '18' in s:
+                return 'FSK ab 18 – erst ab 0 Uhr'
+            if '16' in s:
+                return 'FSK ab 16 – erst ab 22 Uhr'
+    for k in ('ageRating', 'parentalRating', 'fsk', 'rating', 'ageRestriction'):
+        val = str(m.get(k, '')).upper()
+        if '18' in val:
+            return 'FSK ab 18 – erst ab 0 Uhr'
+        if '16' in val:
+            return 'FSK ab 16 – erst ab 22 Uhr'
+    full_text = (
+        str(m.get('description', '')) + ' ' + 
+        str(m.get('title', '')) + ' ' + 
+        str(m.get('secondaryTitle', ''))
+    ).lower()
+    if 'ab 18' in full_text or 'fsk 18' in full_text or 'jugendfrei ab 18' in full_text:
+        return 'FSK ab 18 – erst ab 0 Uhr'
+    if 'ab 16' in full_text or 'fsk 16' in full_text or 'jugendfrei ab 16' in full_text:
+        return 'FSK ab 16 – erst ab 22 Uhr'
+    return None
+
+
 def _build_movie(m):
     vid  = (m.get('video') or {}).get('id', '')
     path = m.get('path', '')
     url  = ('vod:%s' % vid) if vid else ('movie:%s' % path)
+    
+    fsk = _detect_fsk_from_node(m)
+    if fsk and vid:
+        _FSK_MAP[vid] = fsk
+
     poster = (_img(m, 'heroPortrait', 'nextgen-webphone-heroportrait-563x')
               or _img(m, 'heroPortraitImage', 'nextgen-webphone-heroportrait-563x')
               or _img(m, 'posterImage', 'nextgen-webphone-heroportrait-563x'))
@@ -479,6 +516,7 @@ def _page(items, base_url, offset):
 
 def load(url='', params=None):
     return [
+        _folder('Alle Filme',    'menu:all_movies', 'Alle Filme aller Mediatheken auf einen Blick.'),
         _folder('Mediatheken',   'menu:channels'),
         _folder('Live TV',       'menu:live',    'Joyn Live-Sender.',   'get_live'),
         _folder('Live TV Abruf', 'menu:live_vod'),
@@ -500,6 +538,9 @@ def showEntries(url='', params=None):
         except ValueError:
             offset = 0
 
+    if base_url == 'menu:all_movies':
+        return _load_all_movies(offset)
+
     if base_url == 'menu:channels':
         return _load_channels_vod(offset)
 
@@ -507,7 +548,7 @@ def showEntries(url='', params=None):
         return _load_live_vod(offset)
 
     if base_url.startswith('cat:'):
-        path = base_url[4:]  # z.B. '/serien', '/filme', '/'
+        path = base_url[4:]
         return _load_categories(path, offset)
 
     if base_url.startswith('block:'):
@@ -515,7 +556,7 @@ def showEntries(url='', params=None):
         return _load_block(block_id, offset)
 
     if base_url.startswith('channel:'):
-        path = base_url[8:]  # '/senderpath'
+        path = base_url[8:] 
         return _load_channel_content(path, offset)
 
     if base_url.startswith('compilation:'):
@@ -527,6 +568,32 @@ def showEntries(url='', params=None):
         return _load_collection(path, offset)
 
     return _load_categories('/', offset)
+
+
+def _load_all_movies(offset=0):
+    all_movies = []
+    seen_keys = set()
+    cat_data = _gql('LandingPageClient', {'path': '/filme'}, 'LANDINGPAGE', {'enable_user_location': 'true'})
+    page = (cat_data or {}).get('page') or {}
+    blocks = list(page.get('blocks') or []) + list(page.get('lazyBlocks') or [])
+    block_ids = [block.get('id') for block in blocks if isinstance(block, dict) and block.get('__typename') in _CATEGORY_LANES and block.get('id')]
+    
+    if block_ids:
+        b_data = _gql('LandingBlocks', {'ids': block_ids}, 'LANDINGBLOCKS', {'enable_user_location': 'true'})
+        for item in _extract(b_data):
+            if item.get('mediatype') == 'movie' and item.get('url') not in seen_keys:
+                seen_keys.add(item.get('url'))
+                all_movies.append(item)
+
+    if len(all_movies) < 50:
+        search_data = _gql('SearchQ', {'text': 'a', 'first': 500, 'offset': 0}, 'SEARCH', {'enable_user_location': 'true'})
+        for item in _extract(search_data):
+            if item.get('mediatype') == 'movie' and item.get('url') not in seen_keys:
+                seen_keys.add(item.get('url'))
+                all_movies.append(item)
+
+    all_movies.sort(key=lambda x: x.get('title', '').upper())
+    return _page(all_movies, 'menu:all_movies', offset)
 
 
 def _load_channels_vod(offset=0):
@@ -806,6 +873,15 @@ def _get_ent(video_id, stream_type):
                           {'content_id': video_id, 'content_type': stream_type}, h)
     if not body or st >= 400:
         log.log('[Joyn] _get_ent FAILED HTTP %d body=%s' % (st, body[:300]), log.LOGWARNING)
+        try:
+            import xbmcgui
+            if 'ENT_AgeVerificationSetupRequired' in body or 'age' in body.lower() or '16' in body or '18' in body:
+                fsk_text = _FSK_MAP.get(video_id)
+                if not fsk_text:
+                    fsk_text = 'FSK ab 18 – erst ab 0 Uhr' if '18' in body else 'FSK ab 16 – erst ab 22 Uhr'
+                xbmcgui.Dialog().notification('Joyn Jugendschutz', fsk_text, xbmcgui.NOTIFICATION_ERROR, 5000, sound=False)
+        except Exception:
+            pass
         return ''
     try:
         parsed = json.loads(body)
@@ -986,13 +1062,21 @@ def get_hosters(title='', year='', season=0, episode=0,
         data = _gql('PageMovieDetailStatic', {'path': path}, 'MOVIES',
                     {'enable_user_location': 'true'})
         vid  = ''
+        mov_node = None
         if isinstance(data, dict):
             for v in data.values():
                 if isinstance(v, dict):
                     mov = v.get('movie') or v
-                    vid = (mov.get('video') or {}).get('id', '')
-                    if vid:
-                        break
+                    if isinstance(mov, dict):
+                        mov_node = mov
+                        vid = (mov.get('video') or {}).get('id', '')
+                        if vid:
+                            break
+        if mov_node:
+            fsk = _detect_fsk_from_node(mov_node)
+            if fsk and vid:
+                _FSK_MAP[vid] = fsk
+
         if not vid:
             log.log('[Joyn] get_hosters: movie video_id nicht gefunden! data=%s'
                     % str(data)[:300], log.LOGWARNING)
