@@ -1,15 +1,23 @@
 # -*- coding: utf-8 -*-
 import re
+import time
+import concurrent.futures
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from resources.lib import multiquest, log
+from resources.lib.control import keyboard
 
 SITE_ID       = 'hdfilme'
 SITE_NAME     = 'HD Filme'
-SITE_DOMAIN   = 'hdfilme1.co'
+SITE_DOMAIN   = 'hd-filme.bond'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
 
-_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+_S_SEARCH   = '__hdfilme_search__'
+_last_search = ''
+
+_FF = 158
+_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:%d.0) Gecko/20100101 Firefox/%d.0' % (_FF, _FF)
 
 _SKIP_LINK = re.compile(
     r'/vod/vpn|youtube\.com|embed-\.html|/e/\s*$|/e/\s*\"|'
@@ -22,16 +30,52 @@ def _base():
     return 'https://' + SITE_DOMAIN
 
 
-def _get(url, referer=None):
-    headers = {'User-Agent': _UA}
+def _headers(url, referer=None):
+    h = {
+        'User-Agent': _UA,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'de,en-US;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+    }
     if referer:
-        headers['Referer'] = referer
+        h['Referer'] = referer
+    h['Upgrade-Insecure-Requests'] = '1'
+    h['Sec-Fetch-Dest'] = 'document'
+    h['Sec-Fetch-Mode'] = 'navigate'
+    same = bool(referer) and urlparse(referer).hostname == urlparse(url).hostname
+    h['Sec-Fetch-Site'] = 'same-origin' if same else ('cross-site' if referer else 'none')
+    h['Sec-Fetch-User'] = '?1'
+    h['Priority'] = 'u=0, i'
+    return h
+
+
+def _get(url, referer=None, cookies=True):
     try:
-        r = multiquest.get(url, headers=headers, timeout=10)
+        r = multiquest.get(url, headers=_headers(url, referer), timeout=10, cookies=cookies)
         r.raise_for_status()
         return r.text
     except Exception:
+        log.log('[hdfilme] _get fehlgeschlagen: %s' % url)
         log.error()
+        return ''
+
+
+def _post_headers(referer):
+    h = _headers(_base() + '/index.php', referer)
+    h['Content-Type'] = 'application/x-www-form-urlencoded'
+    h['Origin'] = _base()
+    h['Sec-Fetch-Site'] = 'same-origin'
+    return h
+
+
+def _post(data, referer=None, cookies=True, path='/'):
+    try:
+        r = multiquest.post(_base() + path, data=data, headers=_post_headers(referer or _base() + '/'), timeout=10, cookies=cookies)
+        r.raise_for_status()
+        return r.text
+    except Exception:
+        log.log('[hdfilme] _post fehlgeschlagen: %s' % data.get('story', ''))
         return ''
 
 
@@ -111,50 +155,108 @@ def _get_user_hash():
     return m.group(1) if m else ''
 
 
-def _search_ajax(query):
-    from urllib.parse import urlencode as _urlencode
-    user_hash = _get_user_hash()
-    if not user_hash:
-        return []
-    url = _base() + '/engine/ajax/controller.php?mod=search'
-    payload = _urlencode({'query': query, 'user_hash': user_hash}).encode('utf-8')
+def _search_url(query):
+    from urllib.parse import quote
+    return _base() + '/index.php?do=search&subaction=search&story=' + quote(query, safe='')
+
+
+def _warmup():
     try:
-        req = Request(url, data=payload, headers={
-            'User-Agent': _UA,
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Referer': _base(),
-            'X-Requested-With': 'XMLHttpRequest',
-        })
-        import urllib.request as _urllib_request
-        with _urllib_request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode('utf-8', errors='replace')
+        if multiquest.get_cookie(_base(), 'PHPSESSID'):
+            return
     except Exception:
-        log.error()
+        pass
+    _get(_base() + '/')
+
+
+def _search_form(query, page=1, per_page=0):
+    d = {
+        'story': query,
+        'do': 'search',
+        'subaction': 'search',
+    }
+    if page > 1:
+        d['search_start'] = str(page)
+        d['full_search'] = '0'
+        d['result_from'] = str((page - 1) * per_page + 1)
+    return d
+
+
+def _search_ajax(query, is_global=False):
+    _warmup()
+    html = _post(_search_form(query))
+    if html:
+        items = _parse_articles(html)
+        if items:
+            items += _fetch_more_search_pages(query, per_page=len(items), is_global=is_global, use_post=True)
+            return items
+    url  = _search_url(query)
+    html = _get(url, referer=_base())
+    if not html:
         return []
-    items = []
-    for href, title, plot in re.findall(
-        r'<a\s+href=\"([^\"]+)\"[^>]*>\s*<span[^>]*class=\"searchheading\"[^>]*>([^<]+)</span>\s*<span>([^<]*)</span>',
-        html, re.I
-    ):
-        s_name = re.sub(r'\s+stream\s*$', '', title.strip(), flags=re.I).strip()
-        staffel_m  = re.search(r'^(.*?)\s*[-–]\s*Staffel\s*(\d+)', s_name, re.I)
-        season_num = int(staffel_m.group(2)) if staffel_m else 0
-        is_tv      = staffel_m is not None
-        if staffel_m and season_num:
-            next_func = 'get_episodes'
-        elif is_tv:
-            next_func = 'get_seasons'
-        else:
-            next_func = 'get_hosters'
-        items.append({
-            'title':       s_name,
-            'url':         href if href.startswith('http') else _base() + '/' + href.lstrip('/'),
-            'season':      season_num,
-            'mediatype':   'tvshow' if is_tv else 'movie',
-            'next_func':   next_func,
-            'is_playable': False,
-        })
+    items = _parse_articles(html)
+    items += _fetch_more_search_pages(url, is_global=is_global)
     return items
+
+
+_RETRY_PAUSE = 0.6
+
+
+def _fetch_search_page(base, page, fresh=False, per_page=0, use_post=False):
+    if use_post:
+        html = _post(_search_form(base, page, per_page), cookies=fresh, path='/index.php')
+    else:
+        sep = '&' if '?' in base else '?'
+        url = '%s%ssearch_start=%d' % (base, sep, page)
+        html = _get(url, referer=_base(), cookies=fresh)
+    if not html:
+        return [], False
+    return _parse_articles(html), True
+
+
+def _fetch_more_search_pages(base_url, is_global=False, batch=4, per_page=0, use_post=False):
+    max_pages = 5 if is_global else 10
+    d_pages   = {}
+    retry     = []
+    end       = None
+    page      = 2
+    while page <= max_pages:
+        pages_batch = list(range(page, min(page + batch, max_pages + 1)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(pages_batch)) as pool:
+            results = list(pool.map(lambda p: _fetch_search_page(base_url, p, False, per_page, use_post), pages_batch))
+        for num, (rows, reached) in zip(pages_batch, results):
+            if not reached:
+                retry.append(num)
+            elif rows:
+                d_pages[num] = rows
+            else:
+                time.sleep(_RETRY_PAUSE)
+                rows2, reached2 = _fetch_search_page(base_url, num, True, per_page, use_post)
+                if reached2 and not rows2:
+                    end = num
+                    break
+                if rows2:
+                    log.log('[hdfilme] search retry: page %d recovered, %d hits' % (num, len(rows2)))
+                    d_pages[num] = rows2
+                else:
+                    log.log('[hdfilme] search retry: page %d unconfirmed, skipped' % num)
+        if end is not None:
+            break
+        page += batch
+    if end is not None:
+        retry = [p for p in retry if p < end]
+    for num in retry:
+        time.sleep(_RETRY_PAUSE)
+        rows, reached = _fetch_search_page(base_url, num, True, per_page, use_post)
+        if rows:
+            log.log('[hdfilme] search retry: page %d recovered, %d hits' % (num, len(rows)))
+            d_pages[num] = rows
+        else:
+            log.log('[hdfilme] search retry: page %d still unreachable' % num)
+    all_items = []
+    for num in sorted(d_pages):
+        all_items.extend(d_pages[num])
+    return all_items
 
 
 def _find_page_url(title, year, season=0):
@@ -336,6 +438,7 @@ def load(url='', params=None):
         {'title': 'Genres',            'url': 'genres',                           'next_func': 'load', 'is_playable': False},
         {'title': 'Nach Jahr',         'url': 'jahre',                            'next_func': 'load', 'is_playable': False},
         {'title': 'Nach Land',         'url': 'laender',                          'next_func': 'load', 'is_playable': False},
+        {'title': '[B]Suche[/B]',      'url': _S_SEARCH,                          'next_func': 'load', 'is_playable': False},
     ]
 
 
@@ -376,28 +479,13 @@ def _load_laender(b):
     ]
 
 
-def _browse_entries(url):
-    b = _base()
-
-    if url == 'genres':
-        return _load_genres(b)
-    if url == 'jahre':
-        return _load_jahre(b)
-    if url == 'laender':
-        return _load_laender(b)
-
-    html  = _get(url)
-    if not html:
-        log.log('hdfilme _browse_entries: leere Antwort für %s' % url, log.LOGWARNING)
-        return []
-    items = []
-
+def _parse_articles(html):
+    items    = []
     articles = re.findall(r'<div class=\"box-product(.*?)</li>', html, re.S)
     if not articles:
         articles = re.findall(r'<article[^>]*>(.*?)</article>', html, re.S)
     if not articles:
         articles = re.findall(r'<li[^>]*class=\"[^\"]*item[^\"]*\"[^>]*>(.*?)</li>', html, re.S)
-
     for article in articles:
         url_m = re.search(r'href=\"([^\"]+)\"[^>]*title=\"([^\"]+)\"', article, re.I)
         if url_m:
@@ -410,7 +498,6 @@ def _browse_entries(url):
             s_url  = url_m.group(1)
             h3_m   = re.search(r'<h3[^>]*>(.*?)</h3>', article, re.S | re.I)
             s_name = re.sub(r'<[^>]+>', '', h3_m.group(1)).strip() if h3_m else ''
-
         if not s_name or not s_url:
             continue
         s_name = re.sub(r'\s+stream\s*$', '', s_name, flags=re.I).strip()
@@ -420,7 +507,6 @@ def _browse_entries(url):
             s_url = 'https:' + s_url
         elif not s_url.startswith('http'):
             s_url = _base() + '/' + s_url.lstrip('/')
-
         thumb_m = (re.search(r'data-src=\"(/files/[^\"]+)\"', article, re.I) or
                    re.search(r'data-src=\"(/uploads/[^\"]+)\"', article, re.I) or
                    re.search(r'data-src=\"([^\"]+)\"', article, re.I) or
@@ -428,22 +514,18 @@ def _browse_entries(url):
         thumb = thumb_m.group(1) if thumb_m else ''
         if thumb.startswith('/'):
             thumb = _base() + thumb
-
-        year_m = re.search(r'text-capitalize[^>]+>\s*[^<]*?(\d{4})\s*<', article, re.I)
-        year   = year_m.group(1).strip() if year_m else ''
-
+        year_m     = re.search(r'text-capitalize[^>]+>\s*[^<]*?(\d{4})\s*<', article, re.I)
+        year       = year_m.group(1).strip() if year_m else ''
         staffel_m  = re.search(r'^(.*?)\s*[-–]\s*Staffel\s*(\d+)', s_name, re.I)
         season_num = int(staffel_m.group(2)) if staffel_m else 0
         is_tv      = staffel_m is not None or bool(re.search(r'season|serie', s_name, re.I))
-
         if staffel_m and season_num:
             next_func = 'get_episodes'
         elif is_tv:
             next_func = 'get_seasons'
         else:
             next_func = 'get_hosters'
-
-        item = {
+        items.append({
             'title':       s_name,
             'url':         s_url,
             'poster':      thumb,
@@ -452,8 +534,36 @@ def _browse_entries(url):
             'mediatype':   'tvshow' if is_tv else 'movie',
             'next_func':   next_func,
             'is_playable': False,
-        }
-        items.append(item)
+        })
+    return items
+
+
+def _browse_entries(url):
+    b = _base()
+
+    if url == 'genres':
+        return _load_genres(b)
+    if url == 'jahre':
+        return _load_jahre(b)
+    if url == 'laender':
+        return _load_laender(b)
+    if url == _S_SEARCH:
+        global _last_search
+        kb = keyboard(_last_search, 'HD Filme Suche')
+        kb.doModal()
+        if not kb.isConfirmed():
+            return []
+        query = kb.getText().strip()
+        if not query:
+            return []
+        _last_search = query
+        return search(query=query)
+
+    html  = _get(url)
+    if not html:
+        log.log('hdfilme _browse_entries: leere Antwort für %s' % url, log.LOGWARNING)
+        return []
+    items = _parse_articles(html)
 
     next_m = re.search(r'href=\"([^\"]+)\">(?:›|&rsaquo;|Next|Weiter)</a>', html, re.I)
     if not next_m:
@@ -462,10 +572,17 @@ def _browse_entries(url):
         next_url = next_m.group(1)
         if next_url.startswith('/'):
             next_url = _base() + next_url
-        items.append({'title': '[B]>>> Weiter[/B]', 'url': next_url, 'next_func': 'load', 'is_playable': False})
+        page_info = ''
+        pag_m = re.search(r'class=\"[^\"]*pagination[^\"]*\"(.*?)</div>', html, re.S | re.I)
+        if pag_m:
+            cur_m  = re.search(r'<span[^>]*>(\d+)</span>', pag_m.group(1))
+            pages  = [int(x) for x in re.findall(r'>(\d{1,6})<', pag_m.group(1))]
+            if cur_m and pages:
+                page_info = ' [Seite %s / %d]' % (cur_m.group(1), max(pages))
+        items.append({'title': '[B]>>> Weiter[/B]' + page_info, 'url': next_url, 'next_func': 'load', 'is_playable': False})
 
     return items
 
 
-def search(query='', params=None):
-    return _search_ajax(query)
+def search(query='', params=None, is_global=False):
+    return _search_ajax(query, is_global=is_global)
