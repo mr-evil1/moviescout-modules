@@ -5,6 +5,7 @@ from html import unescape
 from urllib.parse import quote, quote_plus
 
 from resources.lib import multiquest, log
+from resources.lib.control import keyboard
 
 SITE_ID       = 'filmo'
 SITE_NAME     = 'Filmo'
@@ -23,6 +24,9 @@ _URL_SEARCH      = _URL_MAIN + '/search?q=%s'
 _URL_MINT        = _URL_MAIN + '/n'
 
 _HERO_TITLE = 'Neu diese Woche'
+
+_S_SEARCH   = '__filmo_search__'
+_last_search = ''
 
 _LANG_FLAGS = {
     'de': 'DE',
@@ -145,7 +149,7 @@ def load(url='', params=None):
         {'title': 'Kollektionen', 'url': _URL_COLLECTIONS, 'is_playable': False, 'next_func': 'showCollections'},
         {'title': 'Highlights',   'url': _URL_MAIN,        'is_playable': False, 'next_func': 'showRows'},
         {'title': 'A-Z',          'url': _URL_LETTERS,     'is_playable': False, 'next_func': 'showLetters'},
-        {'title': 'Suche',        'url': '',               'is_playable': False, 'next_func': 'search'},
+        {'title': '[B]Suche[/B]',  'url': _S_SEARCH,         'is_playable': False, 'next_func': 'search'},
     ]
 
 
@@ -265,16 +269,32 @@ def showLetters(url='', params=None):
     ]
 
 
-def search(query='', url='', params=None):
+def _search_results(sUrl, is_global=False):
+    sHtml = _get(sUrl)
+    if not sHtml:
+        return []
+    items = _parse_cards(sHtml)
+    if not is_global:
+        nxt = _next_page_item(sUrl, sHtml, next_func='search')
+        if nxt:
+            items.append(nxt)
+    return items
+
+
+def search(query='', url='', params=None, is_global=False):
+    global _last_search
+    if url and url.startswith('http'):
+        return _search_results(url, is_global)
     if not query:
-        try:
-            import xbmcgui
-            query = xbmcgui.Dialog().input('Filmo Suche').strip()
-        except Exception:
-            pass
+        kb = keyboard(_last_search, 'Filmo Suche')
+        kb.doModal()
+        if not kb.isConfirmed():
+            return []
+        query = kb.getText().strip()
     if not query:
         return []
-    return _parse_cards(_get(_URL_SEARCH % quote_plus(query)))
+    _last_search = query
+    return _search_results(_URL_SEARCH % quote_plus(query), is_global)
 
 
 def get_details(url='', params=None):
