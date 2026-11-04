@@ -1,5 +1,7 @@
 import re
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from urllib.parse import quote, urlparse
 from resources.lib import multiquest, log
@@ -10,7 +12,7 @@ SITE_DOMAIN   = 'streamcloud.date'
 TYPE          = 'both'
 GLOBAL_SEARCH = True
 
-UA = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36'
+UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/143.0.0.0 Mobile Safari/537.36'
 
 GENRES = [
     ('abenteuer', 'Abenteuer'), ('action', 'Action'), ('action-adventure', 'Action & Adventure'),
@@ -64,20 +66,14 @@ def _headers(referer=None):
     return headers
 
 
-LAST_UA = [UA]
-
-
 def _get(url, referer=None):
     try:
         r = multiquest.get(url, headers=_headers(referer), timeout=15, use_cf=True)
         r.raise_for_status()
-        try:
-            LAST_UA[0] = r.request.headers.get('User-Agent') or UA
-        except Exception:
-            LAST_UA[0] = UA
         return r.text
-    except Exception:
-        log.error()
+    except Exception as e:
+        if '404' not in str(e):
+            log.error()
         return ''
 
 
@@ -89,6 +85,13 @@ def _get_json(url, referer=None):
     except Exception:
         log.error()
         return {}
+
+
+def _dbg(msg):
+    try:
+        log.log('[streamcloud] ' + str(msg))
+    except Exception:
+        pass
 
 
 def _cleantitle(s):
@@ -327,22 +330,54 @@ def _title_matches(title, clean_titles):
     return any(current and c and (current.startswith(c) or c.startswith(current)) for c in clean_titles)
 
 
-def _find_detail_urls(title, year, expect_series, imdb_id=''):
+def _find_detail_urls(title, year, expect_series, imdb_id='', tmdb=''):
     seen    = set()
     results = []
-    query   = imdb_id if imdb_id else title
-    for item in _api_search(query):
-        is_serie = item['tipo'] == 'tv'
-        if expect_series != is_serie:
-            continue
-        if not imdb_id:
-            if year and item['year'] and str(year) != str(item['year']):
+    clean   = {_cleantitle(title)} if title else set()
+    tmdb    = str(tmdb or '').strip()
+    tmdb    = tmdb if tmdb.isdigit() else ''
+    queries = []
+    if imdb_id:
+        queries.append(imdb_id)
+    if title:
+        queries.append(title)
+        if year:
+            queries.append('%s %s' % (title, year))
+    if tmdb:
+        direct = '%s/%s/%s' % (_base(), 'serie' if expect_series else 'filme', tmdb)
+        html = _get(direct, _base())
+        if html and 'devideosrc' in html:
+            return [direct]
+    for query in queries:
+        loose = []
+        for item in _api_search(query):
+            is_serie = item['tipo'] == 'tv'
+            if expect_series != is_serie:
                 continue
-            if not _title_matches(item['title'], {_cleantitle(title)}):
+            if tmdb and re.search(r'/%s(?:-|$)' % tmdb, item['url']):
+                if item['url'] not in seen:
+                    seen.add(item['url'])
+                    results.insert(0, item['url'])
                 continue
-        if item['url'] not in seen:
-            seen.add(item['url'])
-            results.append(item['url'])
+            if query != imdb_id and title:
+                year_ok = True
+                if year and item['year']:
+                    try:
+                        year_ok = abs(int(year) - int(item['year'])) <= 1
+                    except ValueError:
+                        year_ok = str(year) == str(item['year'])
+                if not year_ok:
+                    continue
+                if not _title_matches(item['title'], clean):
+                    loose.append(item['url'])
+                    continue
+            if item['url'] not in seen:
+                seen.add(item['url'])
+                results.append(item['url'])
+        if not results and len(loose) == 1:
+            results.append(loose[0])
+        if results:
+            break
     return results
 
 
@@ -421,13 +456,11 @@ def _origin(url):
     return '%s://%s' % (p.scheme or 'https', p.netloc)
 
 
-def _wrap_direct(url, referer, ua=None):
+def _wrap_direct(url, referer):
     if '|' in url or not MEDIA_RE.search(url):
         return url
     ref = referer if referer.endswith('/') else referer + '/'
-    return '%s|Referer=%s&Origin=%s&User-Agent=%s' % (
-        url, quote(ref, safe=':/'), quote(_origin(ref), safe=':/'), quote(ua or UA, safe='')
-    )
+    return '%s|Referer=%s&User-Agent=%s' % (url, quote(ref, safe=':/'), quote(UA, safe=''))
 
 
 def _accept(url, seen, result, referer):
@@ -447,29 +480,6 @@ def _accept(url, seen, result, referer):
     return True
 
 
-def _b62(n, base):
-    chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    out = ''
-    while True:
-        out = chars[n % base] + out
-        n //= base
-        if n == 0:
-            return out
-
-
-def _unpack(html):
-    out = ''
-    for m in re.finditer(r"\}\('(.*?)',(\d+),(\d+),'([^']*)'\.split\('\|'\)", html or '', re.S):
-        payload = m.group(1).replace("\\'", "'").replace('\\\\', '\\')
-        base, count, words = int(m.group(2)), int(m.group(3)), m.group(4).split('|')
-        table = {}
-        for n in range(count):
-            key = _b62(n, base)
-            table[key] = words[n] if n < len(words) and words[n] else key
-        out += re.sub(r'\b\w+\b', lambda x: table.get(x.group(0), x.group(0)), payload)
-    return out
-
-
 def _post_json(url, payload, referer):
     headers = _headers(referer)
     headers['Content-Type'] = 'application/json'
@@ -482,49 +492,15 @@ def _post_json(url, payload, referer):
             return r.json()
         except TypeError:
             continue
-        except Exception:
-            log.error()
+        except Exception as e:
+            if '404' not in str(e):
+                log.error()
             return {}
     return {}
 
 
-def _dropload_embed(url):
-    m = re.search(r'/(?:e|embed|d)/([0-9a-z]+)', url, re.I)
-    if m and re.search(r'dr0pstream|dropload|dropcdn', _host(url)):
-        return 'https://dropload.io/e/' + m.group(1)
-    return ''
-
-
-def _resolve_embed(url, referer):
-    host = _host(url)
-    if not re.search(r'dr0pstream|dropload|dropcdn', host):
-        return []
-    result = []
-    mirror = _dropload_embed(url)
-    if mirror:
-        result.append(('dropload.io', mirror, False, 'HD', 'de'))
-    html = _get(url, referer)
-    ua   = LAST_UA[0]
-    text = ((html or '') + _unpack(html)).replace('\\/', '/')
-    links = re.findall(r'file\s*:\s*["\'](https?://[^"\']+\.m3u8[^"\']*)', text, re.I)
-    if not links:
-        links = re.findall(r'["\'](https?://[^"\'\s]+\.(?:m3u8|mp4)[^"\'\s]*)', text, re.I)
-    label = re.search(r'qualityLabels["\']?\s*:\s*\{[^}]*?["\']?(\d{3,4})p', text)
-    for link in links[:1]:
-        quality = _quality(label.group(1) + 'p') if label else _quality(link)
-        result.append((
-            host + ' (direkt)',
-            _wrap_direct(unescape(link), _origin(url) + '/', ua),
-            True, quality, 'de',
-        ))
-    return result
-
-
-def _dvs_links(dvs_url, seen):
-    html   = _get(dvs_url, _base())
-    result = []
-    origin = _origin(dvs_url)
-    tag    = re.search(r'<[^>]+data-resolve-token="[^"]*"[^>]*>', html or '')
+def _dvs_request(html, origin):
+    tag = re.search(r'<[^>]+data-resolve-token="[^"]*"[^>]*>', html or '')
     if tag:
         attrs = dict(re.findall(r'data-([a-z-]+)="([^"]*)"', tag.group(0)))
         payload = {
@@ -535,23 +511,39 @@ def _dvs_links(dvs_url, seen):
             'mode':    attrs.get('mode', 'custom'),
             'token':   attrs.get('resolve-token', ''),
         }
-        endpoint = origin + (attrs.get('resolve-endpoint') or '/api/resolve')
+        return origin + (attrs.get('resolve-endpoint') or '/api/resolve'), payload
+    m = re.search(r"fetch\(\s*['\"]([^'\"]*embed-links[^'\"]*)['\"].*?JSON\.stringify\(\{(.*?)\}\)", html or '', re.S)
+    if m:
+        payload = {}
+        for key, a, b, c in re.findall(r"(\w+)\s*:\s*(?:\"([^\"]*)\"|'([^']*)'|(\d+))", m.group(2)):
+            payload[key] = a or b or (int(c) if c else '')
+        if payload.get('token'):
+            return origin + m.group(1), payload
+    return '', {}
+
+
+def _dvs_links(dvs_url, seen):
+    html   = _get(dvs_url, _base())
+    result = []
+    origin = _origin(dvs_url)
+    endpoint, payload = _dvs_request(html, origin)
+    if endpoint:
         data = _post_json(endpoint, payload, dvs_url)
         for src in sorted(data.get('sources') or [], key=lambda x: x.get('rank', 99)):
             link = _norm_url(src.get('url', ''), origin)
             if not link or link in seen:
                 continue
             seen.add(link)
-            direct = _resolve_embed(link, origin + '/')
-            if direct:
-                result += direct
-                continue
             is_media = MEDIA_RE.search(link) is not None
             result.append((
                 src.get('name') or _host(link),
                 _wrap_direct(link, origin + '/') if is_media else link,
                 is_media, _quality(link), 'de',
             ))
+            mirror = _mirror_of(link)
+            if mirror and mirror not in seen:
+                seen.add(mirror)
+                result.append(('dropload.io', mirror, False, 'HD', 'de'))
     if not result:
         for u in _extract_urls(html, origin):
             if _host(u) == 'devideosrc.co' and not MEDIA_RE.search(u):
@@ -585,52 +577,108 @@ def _evil():
         return None
 
 
-def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None):
+def _add_evil(result, seen, items):
+    for item in items or []:
+        name, hurl, direct = item[0], item[1], item[2]
+        if hurl not in seen:
+            seen.add(hurl)
+            result.append((name, hurl, direct, _quality(hurl), 'de'))
+
+
+def _evil_items(evil, imdb, season, episode):
+    try:
+        if season:
+            return list(evil.get_episode(imdb, season, episode) or [])
+        return list(evil.get_movie(imdb) or [])
+    except Exception:
+        log.error()
+        return []
+
+
+MIRRORS = (
+    (re.compile(r'^https?://(?:www\.)?dr0pstream\.[a-z]+/(?:e|embed|d)/([0-9a-z]+)', re.I), 'https://dropload.io/e/%s'),
+)
+
+
+def _mirror_of(url):
+    for rx, tpl in MIRRORS:
+        m = rx.match(url or '')
+        if m:
+            return tpl % m.group(1)
+    return ''
+
+
+CACHE = {}
+CACHE_TTL = 900
+CACHE_TTL_EMPTY = 90
+
+
+def _cache_key(title, year, season, episode, imdb, tmdb, url):
+    ident = url or imdb or (str(tmdb) if tmdb else '') or '%s|%s' % (_cleantitle(title), year)
+    return '%s|%s|%s' % (ident, season, episode)
+
+
+def get_hosters(title='', year='', season=0, episode=0, imdb='', tmdb='', url='', params=None, **kwargs):
     if params:
         season  = int(params.get('season',  season  or 0))
         episode = int(params.get('episode', episode or 0))
     season  = int(season or 0)
     episode = int(episode or 0)
+    tmdb    = tmdb or kwargs.get('tmdb_id') or ''
+    imdb    = imdb if imdb and str(imdb).startswith('tt') else ''
+    key     = _cache_key(title, year, season, episode, imdb, tmdb, url)
+    hit     = CACHE.get(key)
+    if hit and time.time() < hit[0]:
+        _dbg('cache hit %s hoster=%d' % (key, len(hit[1])))
+        return list(hit[1])
+    result = _collect_hosters(title, year, season, episode, imdb, tmdb, url)
+    CACHE[key] = (time.time() + (CACHE_TTL if result else CACHE_TTL_EMPTY), list(result))
+    return result
+
+
+def _collect_hosters(title, year, season, episode, imdb, tmdb, url):
     result  = []
     seen    = set()
     evil    = _evil()
+    serial  = (season, episode) if season else None
+    _dbg('get_hosters title=%r year=%r season=%s episode=%s imdb=%r tmdb=%r url=%r' % (title, year, season, episode, imdb, tmdb, url))
 
-    if season == 0:
-        detail_urls = [url] if url else _find_detail_urls(title, year, False, imdb_id=imdb)[:3]
+    pool = ThreadPoolExecutor(max_workers=1)
+    evil_future = None
+    if imdb and evil:
+        evil_future = pool.submit(_evil_items, evil, imdb, season, episode)
+
+    if imdb and not url:
+        if serial:
+            variants = ['https://devideosrc.co/custom/serial/%s/%d/%d' % (imdb, season, episode)]
+        else:
+            variants = ['https://devideosrc.co/movie/%s' % imdb, 'https://devideosrc.co/custom/movie/%s' % imdb]
+        for variant in variants:
+            result += _dvs_links(variant, seen)
+            if result:
+                break
+
+    if not result:
+        detail_urls = [url] if url else _find_detail_urls(title, year, bool(serial), imdb_id=imdb, tmdb=tmdb)[:3]
+        _dbg('detail_urls=%r' % (detail_urls,))
         for detail_url in detail_urls:
-            links, html = _detail_links(detail_url, seen)
+            links, html = _detail_links(detail_url, seen, serial=serial)
             result += links
             if not imdb:
                 imdb = _imdb_from_html(html)
-        if not result and imdb:
-            result += _dvs_links('https://devideosrc.co/custom/movie/%s' % imdb, seen)
-        if imdb and evil:
-            try:
-                for item in evil.get_movie(imdb):
-                    name, hurl, direct = item[0], item[1], item[2]
-                    if hurl not in seen:
-                        seen.add(hurl)
-                        result.append((name, hurl, direct, _quality(hurl), 'de'))
-            except Exception:
-                log.error()
-    else:
-        detail_urls = [url] if url else _find_detail_urls(title, '', True, imdb_id=imdb)[:3]
-        imdb_id = imdb
-        for detail_url in detail_urls:
-            links, html = _detail_links(detail_url, seen, serial=(season, episode))
-            result += links
-            imdb_id = imdb_id or _imdb_from_html(html)
-        if not result and imdb_id:
-            result += _dvs_links(
-                'https://devideosrc.co/custom/serial/%s/%d/%d' % (imdb_id, season, episode), seen
-            )
-        if imdb_id and evil:
-            try:
-                for item in evil.get_episode(imdb_id, season, episode):
-                    name, hurl, direct = item[0], item[1], item[2]
-                    if hurl not in seen:
-                        seen.add(hurl)
-                        result.append((name, hurl, direct, _quality(hurl), 'de'))
-            except Exception:
-                log.error()
+        if not result and imdb and url:
+            if serial:
+                result += _dvs_links('https://devideosrc.co/custom/serial/%s/%d/%d' % (imdb, season, episode), seen)
+            else:
+                result += _dvs_links('https://devideosrc.co/movie/%s' % imdb, seen)
+
+    _dbg('hoster=%d imdb=%r' % (len(result), imdb))
+    if imdb and evil:
+        if evil_future is None:
+            evil_future = pool.submit(_evil_items, evil, imdb, season, episode)
+        try:
+            _add_evil(result, seen, evil_future.result(timeout=8))
+        except Exception:
+            log.error()
+    pool.shutdown(wait=False)
     return result

@@ -1,15 +1,24 @@
 import re
+from html import unescape
 import time
 import random
 import string
 from urllib.parse import urlparse, urljoin
 from resources.lib import multiquest, log
 
-_VERSION = 'evil.py v2 (cf-retry+sub-resolve)'
+_VERSION = 'evil.py v2 (cf-retry+sub-resolve+noverify)'
 log.log('[evil] loaded: %s' % _VERSION)
 
 _UA  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 _MOB = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/143.0.0.0 Mobile Safari/537.36'
+
+
+def _no_verify():
+    try:
+        from resources.lib.control import getSetting
+        return getSetting('verify.peer') == 'true'
+    except Exception:
+        return False
 
 
 def _get(url, referer=None, ua=None):
@@ -17,7 +26,7 @@ def _get(url, referer=None, ua=None):
     if referer:
         h['Referer'] = referer
     try:
-        r = multiquest.get(url, headers=h, timeout=15)
+        r = multiquest.get(url, headers=h, timeout=15, no_verify=_no_verify())
         r.raise_for_status()
         return r.text
     except Exception:
@@ -134,7 +143,10 @@ def _origin(url):
 def _with_headers(stream, referer, ua=None):
     if '|' in stream:
         return stream
-    return stream + '|Referer=' + referer + '&User-Agent=' + (ua or _MOB).replace(' ', '%20')
+    out = stream + '|Referer=' + referer + '&User-Agent=' + (ua or _MOB).replace(' ', '%20')
+    if _no_verify():
+        out += '&verifypeer=false'
+    return out
 
 
 def _extract_iframes(html, base):
@@ -154,6 +166,8 @@ def _scan(url, referer, depth=0):
     su = _find_stream(html)
     if su:
         return su, url
+    if depth == 0:
+        log.log('[evil] kein Stream: len=%d head=%s' % (len(html), html[:200].replace('\n', ' ')))
     if depth < 2:
         for frame in _extract_iframes(html, url):
             found = _scan(frame, url, depth + 1)
@@ -246,7 +260,82 @@ def _resolve_vidsonic(url):
     return url, False
 
 
+def _dropload_id(url):
+    seg = urlparse(url).path.rstrip('/').split('/')[-1]
+    seg = re.sub(r'^embed-', '', seg)
+    seg = re.sub(r'\.html?$', '', seg)
+    seg = re.sub(r'_[a-z]$', '', seg)
+    return seg if re.fullmatch(r'[a-z0-9]{8,20}', seg, re.I) else ''
+
+
+def _page_text(html):
+    k = html.find('<main>')
+    part = html[k:] if k >= 0 else html
+    part = re.sub(r'<(script|style).*?</\1>', ' ', part, flags=re.S | re.I)
+    part = re.sub(r'<[^>]+>', ' ', part)
+    return re.sub(r'\s+', ' ', unescape(part)).strip()[:300]
+
+
+def _dropload_form(base, fid, mode):
+    form_url = '%s/d/%s_%s' % (base, fid, mode)
+    form = _get(form_url, '%s/d/%s' % (base, fid), ua=_MOB)
+    if not form:
+        log.log('[evil] dropload: Formularseite leer (%s)' % form_url)
+        return form_url, None
+    fields = {}
+    for m in re.finditer(r'<input[^>]+type=["\']hidden["\'][^>]*>', form, re.I):
+        tag = m.group(0)
+        n = re.search(r'name=["\']([^"\']+)["\']', tag)
+        v = re.search(r'value=["\']([^"\']*)["\']', tag)
+        if n:
+            fields[n.group(1)] = v.group(1) if v else ''
+    if 'hash' not in fields:
+        log.log('[evil] dropload: kein hash im Formular: %s' % _page_text(form))
+        return form_url, None
+    return form_url, fields
+
+
+def _dropload_download(fid):
+    base = 'https://dr0pstream.com'
+    verify_off = _no_verify()
+    page = _get('%s/d/%s' % (base, fid), 'https://devideosrc.co/', ua=_MOB)
+    modes = re.findall(r'href=["\']/d/%s_([a-z])["\']' % re.escape(fid), page or '')
+    if not modes:
+        modes = ['n']
+    for mode in modes:
+        for attempt in range(3):
+            form_url, fields = _dropload_form(base, fid, mode)
+            if not fields:
+                time.sleep(1.5)
+                continue
+            time.sleep(3 + attempt * 2)
+            h = {
+                'User-Agent': _MOB,
+                'Referer': form_url,
+                'Origin': base,
+                'Content-Type': 'application/x-www-form-urlencoded',
+            }
+            r = multiquest.post(form_url, data=fields, headers=h, timeout=20, no_verify=verify_off)
+            r.raise_for_status()
+            m = re.search(r'href=["\'](https?://[^"\']+\.(?:mp4|m3u8|mkv)[^"\']*)["\']', r.text, re.I)
+            if m:
+                return m.group(1).replace('&amp;', '&')
+            log.log('[evil] dropload: kein Link (Versuch %d): %s' % (attempt + 1, _page_text(r.text)))
+    return ''
+
+
 def _resolve_dr0pstream(url):
+    try:
+        fid = _dropload_id(url)
+        if fid and any(h in url.lower() for h in ('dropload.', 'dr0pstream.')):
+            link = _dropload_download(fid)
+            if link:
+                out = link + '|Referer=https://dr0pstream.com/&User-Agent=' + _MOB.replace(' ', '%20')
+                if _no_verify():
+                    out += '&verifypeer=false'
+                return out, True
+    except Exception:
+        log.error()
     try:
         html = _get(url, url)
         if not html:
@@ -813,7 +902,7 @@ def _resolve_core(url):
             return _resolve_vidara(url)
         if 'vidsonic.' in u:
             return _resolve_vidsonic(url)
-        if 'dr0pstream.' in u:
+        if 'dr0pstream.' in u or 'dropload.' in u:
             return _resolve_dr0pstream(url)
         if 'supervideo.' in u:
             return _resolve_supervideo(url)
