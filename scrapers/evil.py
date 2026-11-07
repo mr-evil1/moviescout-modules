@@ -670,6 +670,32 @@ def _resolve_voesy(url):
     return url, False
 
 
+def _resolve_streamtape(url):
+    html = _get(url, 'https://streamtape.com/', ua=_UA)
+    if not html:
+        return url, False
+    m = re.search(
+        r"getElementById\(['\"]robotlink['\"]\)[^=]*=\s*['\"]([^'\"]+)['\"]"
+        r"\s*\+\s*['\"]([^'\"]+)['\"](?:\.substring\((\d+)\))?",
+        html
+    )
+    if not m:
+        m = re.search(
+            r"robotlink['\"]?\)\.innerHTML\s*=\s*['\"]([^'\"]+)['\"]"
+            r"\s*\+\s*['\"]([^'\"]+)['\"](?:\.substring\((\d+)\))?",
+            html
+        )
+    if not m:
+        return url, False
+    part1 = m.group(1)
+    part2 = m.group(2)
+    start = int(m.group(3)) if m.group(3) else 0
+    stream = 'https:' + part1 + part2[start:]
+    if len(stream) < 25:
+        return url, False
+    return _with_headers(stream, 'https://streamtape.com/'), True
+
+
 def _resolve_generic(url):
     try:
         found = _scan(url, url)
@@ -835,15 +861,9 @@ def _resolve_bsto(url):
         )
         link = _json.loads(resp.text).get('link', '')
         if link:
-            try:
-                import resolveurl
-                hmf = resolveurl.HostedMediaFile(url=link)
-                if hmf.valid_url():
-                    stream = hmf.resolve()
-                    if stream:
-                        return stream, True
-            except Exception:
-                log.error()
+            stream, ok = _try_resolveurl(link)
+            if ok:
+                return stream, True
             stream_url, ok = resolve(link)
             if ok and stream_url:
                 return stream_url, True
@@ -890,6 +910,19 @@ _DOOD_HOSTS    = ('dood.', 'doodstream.')
 
 _DIRECT_EXTS = ('.mp4', '.mkv', '.m3u8', '.ts', '.avi', '.mov', '.mpd')
 
+def _try_resolveurl(url):
+    try:
+        import resolveurl
+        hmf = resolveurl.HostedMediaFile(url=url)
+        if hmf.valid_url():
+            stream = hmf.resolve()
+            if stream:
+                return stream, True
+    except Exception:
+        pass
+    return None, False
+
+
 def _resolve_core(url):
     try:
         u = url.lower()
@@ -928,6 +961,8 @@ def _resolve_core(url):
             return _resolve_gupload(url)
         if any(h in u for h in _MOFLIX_HOSTS):
             return _resolve_moflix(url)
+        if 'streamtape.' in u:
+            return _resolve_streamtape(url)
         return _resolve_generic(url)
     except Exception:
         log.error()
@@ -1032,7 +1067,7 @@ def _episode_hosters_new(html, season, episode):
         raw     = link_m.group(1).strip()
         link    = ('https:' + raw) if raw.startswith('//') else raw
         label   = label_m.group(1) if label_m else ('S%d E%d' % (season, episode))
-        return [(label, link, 'HD')]
+        return [(label, link, _quality_from_text(label))]
     return []
 
 
@@ -1059,10 +1094,14 @@ def _cloud_expand(raw_list):
         if _TRIGGER in hurl:
             for sub_name, sub_url, sub_qual in _resolve_sirius(hurl):
                 su, ok = _resolve_core(sub_url)
-                result.append((sub_name, su if ok else sub_url, ok))
+                final = su if ok else sub_url
+                q = _quality_from_text(final) if sub_qual == 'HD' else sub_qual
+                result.append((sub_name, final, ok, q))
         else:
             su, ok = _resolve_core(hurl)
-            result.append((name, su if ok else hurl, ok))
+            final = su if ok else hurl
+            q = _quality_from_text(final) if quality == 'HD' else quality
+            result.append((name, final, ok, q))
     return result
 
 
